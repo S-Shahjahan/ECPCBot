@@ -1,0 +1,40 @@
+{
+  "name": "relay-whatsapp-studio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env server/index.js",
+    "build": "tsc --noEmit && vite build",
+    "start": "node --env-file-if-exists=.env server/index.js",
+    "demo": "node scripts/demo.js",
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "check": "npm run build && npm test",
+    "db:migrate": "node --env-file-if-exists=.env scripts/migrate.js"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.14",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "express-session": "^1.18.2",
+    "helmet": "^8.1.0",
+    "lucide-react": "^0.468.0",
+    "nodemailer": "^10.0.1",
+    "pg": "^8.16.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "prettier": "^3.9.6",
+    "supertest": "^7.1.4",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2"
+  }
+}
