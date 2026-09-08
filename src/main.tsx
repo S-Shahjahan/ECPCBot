@@ -49,7 +49,10 @@ async function api(path: string, method = 'GET', body?: unknown) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok)
-    throw new Error(data.error || 'Something went wrong. Please try again.');
+    throw new Error(
+      (data.error || 'Something went wrong. Please try again.') +
+        (data.request_id ? ` Reference: ${data.request_id}` : ''),
+    );
   if (data.csrf) csrf = data.csrf;
   return data;
 }
@@ -926,6 +929,7 @@ function ClientEditor({
   const [dirty, setDirty] = useState(false);
   const [question, setQuestion] = useState('Hi, what time are you open?');
   const [answer, setAnswer] = useState<Obj | null>(null);
+  const [testError, setTestError] = useState('');
   const [testing, setTesting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirm, setConfirm] = useState('');
@@ -1185,7 +1189,11 @@ function ClientEditor({
                   </Field>
                   <Field
                     label="Model ID"
-                    hint="Use a model available in the provider account."
+                    hint={
+                      form.llm_provider === 'gemini'
+                        ? 'Example: gemini-3.1-flash-lite. Use the exact API model ID, without spaces.'
+                        : 'Use the exact API model ID from your provider, without spaces.'
+                    }
                   >
                     <input
                       value={form.llm_model}
@@ -1561,6 +1569,8 @@ function ClientEditor({
                 disabled={!id || dirty || testing || !question.trim()}
                 onClick={async () => {
                   setTesting(true);
+                  setTestError('');
+                  setAnswer(null);
                   try {
                     const result = await api(
                       '/clients/' + id + '/test',
@@ -1569,7 +1579,7 @@ function ClientEditor({
                     );
                     setAnswer({ ...result, question });
                   } catch (e: any) {
-                    notify(e.message);
+                    setTestError(e.message);
                   } finally {
                     setTesting(false);
                   }
@@ -1582,6 +1592,15 @@ function ClientEditor({
                 )}
                 Test reply
               </button>
+              {testError && (
+                <div
+                  className="error"
+                  role="alert"
+                  style={{ marginTop: 12, overflowWrap: 'anywhere' }}
+                >
+                  {testError}
+                </div>
+              )}
               {(!id || dirty) && (
                 <small>Save your changes to test this configuration.</small>
               )}

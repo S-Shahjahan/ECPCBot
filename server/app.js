@@ -8,7 +8,7 @@ import { secretBox, passwordVerifier, safeEqual, redact } from './security.js';
 import { mountWebhook } from './webhook.js';
 import { publicClient, saveClient } from './clients.js';
 import { providers } from './prompts.js';
-import { generateReply } from './providers.js';
+import { generateReply, ProviderError } from './providers.js';
 class DatabaseSessions extends session.Store {
   constructor(db) {
     super();
@@ -45,7 +45,7 @@ class DatabaseSessions extends session.Store {
       .then(() => cb?.(), cb);
   }
 }
-export function createApp({ db, config }) {
+export function createApp({ db, config, generate = generateReply }) {
   const app = express();
   const box = secretBox(config.encryptionKey);
   const verifyPassword = passwordVerifier(config.password);
@@ -278,7 +278,7 @@ export function createApp({ db, config }) {
       const master = await db.one(
         "SELECT value FROM settings WHERE id='master_prompt'",
       );
-      const result = await generateReply({
+      const result = await generate({
         client,
         box,
         masterPrompt: master.value.text,
@@ -450,17 +450,22 @@ export function createApp({ db, config }) {
     res.status(404).json({ error: 'This endpoint does not exist.' }),
   );
   app.use((error, req, res, _next) => {
+    const providerError = error instanceof ProviderError;
+    const showProviderError = providerError && Boolean(req.session?.admin);
     const status =
       error instanceof z.ZodError
         ? 400
         : error.code === '23505'
           ? 409
-          : error.status || (error.name === 'ProviderError' ? 502 : 500);
+          : error.status || (providerError ? 502 : 500);
     console.error(
       JSON.stringify({
         event: 'request_failed',
         request_id: req.requestId,
         status,
+        ...(providerError
+          ? { code: error.code, upstream_status: error.upstreamStatus }
+          : {}),
       }),
     );
     res.status(status).json({
@@ -471,10 +476,13 @@ export function createApp({ db, config }) {
               .join('; ')
           : error.code === '23505'
             ? 'That WhatsApp phone number ID is already assigned to a client.'
-            : status < 500
+            : status < 500 || showProviderError
               ? error.message
               : 'The request could not be completed. Check the connection and configuration, then try again.',
       request_id: req.requestId,
+      ...(showProviderError
+        ? { code: error.code, upstream_status: error.upstreamStatus }
+        : {}),
     });
   });
   return { app, box };

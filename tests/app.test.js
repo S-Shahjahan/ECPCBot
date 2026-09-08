@@ -768,3 +768,88 @@ test('malformed signed payloads cannot create work', async () => {
     400,
   );
 });
+test('AI test endpoint shows safe actionable provider errors and keeps raw responses private', async () => {
+  let providerStatus = 401;
+  let unknownError = false;
+  const { app: testApp } = createApp({
+    db,
+    config: { ...config, demo: false },
+    generate: async (args) => {
+      if (unknownError)
+        throw new Error('private-database-password-and-internal-stack');
+      return generateReply({
+        ...args,
+        fetchFn: async () =>
+          new Response(
+            JSON.stringify({
+              error: { message: 'private-provider-key-and-customer-message' },
+            }),
+            { status: providerStatus },
+          ),
+      });
+    },
+  });
+  const tester = request.agent(testApp);
+  const initial = await tester.get('/api/session');
+  const login = await tester
+    .post('/api/login')
+    .set('x-csrf-token', initial.body.csrf)
+    .send({ password: config.password });
+  assert.equal(login.status, 200);
+  for (const [status, code, phrase] of [
+    [401, 'AI_KEY_REJECTED', 'API key'],
+    [403, 'AI_ACCESS_DENIED', 'permissions'],
+    [404, 'AI_MODEL_NOT_FOUND', 'model ID'],
+    [429, 'AI_LIMIT_REACHED', 'quota'],
+    [503, 'AI_PROVIDER_UNAVAILABLE', 'temporarily unavailable'],
+  ]) {
+    providerStatus = status;
+    const response = await tester
+      .post('/api/clients/' + first.id + '/test')
+      .set('x-csrf-token', login.body.csrf)
+      .send({ message: 'What are your hours?' });
+    assert.equal(response.status, 502);
+    assert.equal(response.body.code, code);
+    assert.equal(response.body.upstream_status, status);
+    assert(response.body.error.includes(phrase));
+    assert(response.body.request_id);
+    assert(!response.text.includes('private-provider-key'));
+  }
+  unknownError = true;
+  const response = await tester
+    .post('/api/clients/' + first.id + '/test')
+    .set('x-csrf-token', login.body.csrf)
+    .send({ message: 'Hours?' });
+  assert.equal(response.status, 500);
+  assert(!response.text.includes('private-database-password'));
+  assert.equal(response.body.code, undefined);
+});
+test('missing and unreadable AI credentials explain the correction without calling the provider', async () => {
+  const row = await db.one('SELECT * FROM clients WHERE id=$1', [first.id]);
+  for (const [key, code] of [
+    ['', 'AI_KEY_MISSING'],
+    ['corrupt-ciphertext', 'AI_KEY_UNREADABLE'],
+  ]) {
+    await assert.rejects(
+      generateReply({
+        client: { ...row, secrets: { ...row.secrets, llm_api_key: key } },
+        box,
+        masterPrompt: '',
+        messages: [{ role: 'user', content: 'Hours?' }],
+        demo: false,
+        fetchFn: async () => {
+          assert.fail('Must not contact provider');
+        },
+      }),
+      (error) => error instanceof ProviderError && error.code === code,
+    );
+  }
+});
+test('friendly model names are rejected with an API model ID instruction', async () => {
+  const response = await mutation('put', '/clients/' + first.id, {
+    ...first,
+    llm_model: 'Gemini 3.1 Flash Lite',
+  });
+  assert.equal(response.status, 400);
+  assert.match(response.body.error, /exact API model ID without spaces/);
+});

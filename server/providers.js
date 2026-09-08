@@ -1,12 +1,50 @@
 import { providers } from './prompts.js';
 import { redact, sensitive } from './security.js';
 export class ProviderError extends Error {
-  constructor(message, retryable = false, ambiguous = false) {
+  constructor(message, retryable = false, ambiguous = false, details = {}) {
     super(message);
     this.name = 'ProviderError';
     this.retryable = retryable;
     this.ambiguous = ambiguous;
+    this.code = details.code || 'PROVIDER_ERROR';
+    this.upstreamStatus = details.upstreamStatus;
   }
+}
+function aiHttpError(status, label) {
+  const errors = {
+    400: [
+      'AI_REQUEST_REJECTED',
+      `${label} rejected the request (HTTP 400). Check that the model ID and the creativity/output-token settings are supported by that model.`,
+    ],
+    401: [
+      'AI_KEY_REJECTED',
+      `${label} rejected the API key (HTTP 401). Re-enter the key from this provider’s API account and save the client.`,
+    ],
+    402: [
+      'AI_BALANCE_REQUIRED',
+      `${label} requires an available API balance (HTTP 402). Check billing in the provider account.`,
+    ],
+    403: [
+      'AI_ACCESS_DENIED',
+      `${label} denied access (HTTP 403). Check the API key’s permissions, model access and any account or regional restrictions.`,
+    ],
+    404: [
+      'AI_MODEL_NOT_FOUND',
+      `${label} could not find the requested model (HTTP 404). Check the exact model ID and whether your API account can use it.`,
+    ],
+    429: [
+      'AI_LIMIT_REACHED',
+      `${label} reported a quota or rate limit (HTTP 429). Check API quota and billing; if you have available quota, wait briefly and retry.`,
+    ],
+  };
+  const [code, message] = errors[status] || [
+    status >= 500 ? 'AI_PROVIDER_UNAVAILABLE' : 'AI_REQUEST_REJECTED',
+    `${label} returned HTTP ${status}. ${status >= 500 ? 'The provider is temporarily unavailable. Try again shortly.' : 'Check the model, API access and account settings.'}`,
+  ];
+  return new ProviderError(message, status === 429 || status >= 500, false, {
+    code,
+    upstreamStatus: status,
+  });
 }
 export async function generateReply({
   client,
@@ -38,11 +76,35 @@ export async function generateReply({
       cost: 0,
     };
   }
-  const key = box.decrypt(client.secrets.llm_api_key);
-  if (!key) throw new ProviderError('AI key is missing.');
+  const provider = providers[c.llm_provider];
+  if (!provider)
+    throw new ProviderError(
+      'Choose a supported AI provider and save the client.',
+      false,
+      false,
+      { code: 'AI_PROVIDER_INVALID' },
+    );
+  let key;
+  try {
+    key = box.decrypt(client.secrets.llm_api_key);
+  } catch {
+    throw new ProviderError(
+      'The saved AI key could not be decrypted. Re-enter and save the key in AI & prompt. Keep the server’s ENCRYPTION_KEY unchanged between deployments.',
+      false,
+      false,
+      { code: 'AI_KEY_UNREADABLE' },
+    );
+  }
+  if (!key)
+    throw new ProviderError(
+      'No AI API key is saved for this client. Add it under AI & prompt, save, then test again.',
+      false,
+      false,
+      { code: 'AI_KEY_MISSING' },
+    );
   let response;
   try {
-    response = await fetchFn(providers[c.llm_provider].url, {
+    response = await fetchFn(provider.url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -68,15 +130,17 @@ export async function generateReply({
     });
   } catch {
     throw new ProviderError(
-      'AI provider timed out or could not be reached.',
+      `${provider.label} timed out or could not be reached. Try again shortly.`,
       true,
+      false,
+      { code: 'AI_CONNECTION_FAILED' },
     );
   }
-  if (!response.ok)
-    throw new ProviderError(
-      `AI provider returned HTTP ${response.status}. Check the model, key and account limits.`,
-      response.status === 429 || response.status >= 500,
-    );
+  if (!response.ok) {
+    // Do not return or log upstream response bodies: they may echo keys or customer content.
+    await response.body?.cancel().catch(() => {});
+    throw aiHttpError(response.status, provider.label);
+  }
   let data;
   try {
     data = await response.json();
@@ -85,7 +149,12 @@ export async function generateReply({
   }
   const text = data.choices?.[0]?.message?.content;
   if (typeof text !== 'string' || !text.trim())
-    throw new ProviderError('AI provider returned an empty answer.', true);
+    throw new ProviderError(
+      `${provider.label} returned no answer text. Try a larger output-token limit or a different supported model; the response may also have been filtered by the provider.`,
+      true,
+      false,
+      { code: 'AI_EMPTY_REPLY' },
+    );
   const input = Number(data.usage?.prompt_tokens || 0),
     output = Number(data.usage?.completion_tokens || 0);
   return {

@@ -8,7 +8,15 @@ const schema = z.object({
   llm_provider: z
     .enum(['openai', 'gemini', 'deepseek', 'glm'])
     .default('gemini'),
-  llm_model: z.string().trim().min(1).max(100),
+  llm_model: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .regex(
+      /^\S+$/,
+      'Enter the exact API model ID without spaces, for example gemini-3.1-flash-lite.',
+    ),
   system_prompt: z.string().max(30000).default(''),
   business_facts: z.string().max(40000).default(''),
   use_master_prompt: z.boolean().default(true),
