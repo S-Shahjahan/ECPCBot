@@ -19,7 +19,10 @@ Open `http://localhost:3000` and choose **Open demo workspace**. Demo sample cli
 ## Included
 
 - Client profiles, separate credentials, provider/model choice, prompt editor, shared master rules, business facts, message defaults, handoff controls and kill switches.
-- OpenAI-compatible adapters for OpenAI, Gemini, DeepSeek and Z.ai. Models are editable; presets are examples, not a guarantee of current availability.
+- OpenAI-compatible adapters for OpenAI, Gemini, DeepSeek, Z.ai, Groq, Mistral, OpenRouter, Together and custom public HTTPS endpoints, plus a native Anthropic adapter. Provider token links, model discovery and connection tests are included. Models are editable; presets are examples, not a guarantee of current availability.
+- Business library with reviewed PDF, Word, text, image OCR and public website imports, bounded crawling, per-client text retrieval and AI personality drafts. No separate embedding model is required for the initial library.
+- Per-client Google OAuth connections for customer-confirmed template emails and calendar calls. One Google OAuth web client serves the Relay installation; each business authorizes its own account.
+- Lead tracker with customer numbers, stages, team notes, conversation links and a streamed CSV export containing all matching chat messages.
 - One signed webhook, routing by Meta `phone_number_id`, with encrypted per-client app secrets and an optional shared default.
 - Durable PostgreSQL inbox, duplicate message protection, ordered processing per conversation, bounded retries, and recovery after a server restart.
 - Conversation history, human takeover/resume, manual replies within the customer-service window, delivery receipts and operational alerts.
@@ -69,7 +72,7 @@ Tests use PGlite's actual PostgreSQL engine locally, an ephemeral in-memory data
 ## Design boundaries
 
 - Handoff creates an in-app alert and optional owner email. It does not send an unsolicited WhatsApp message to the handoff number. A person can reply in the dashboard. The configured contact number is available to the AI for sharing.
-- The system is reactive and sends text only. Unsupported media receives a request for text. Templates, broadcasts, automatic follow-ups, RAG, flow building and voice recognition remain post-MVP features, as the plan specifies.
+- WhatsApp is reactive and sends text only. Incoming unsupported media receives a request for text; image/document import is an owner-facing business library feature. Broadcasts, campaign follow-ups, flow building and voice recognition are not included. Retrieval uses approved text passages, not semantic embeddings.
 - Free-form replies are stopped when 24 hours have elapsed since the customer's most recent message. Pricing, permissions, messaging limits and template policies must be checked in the current Meta account; the plan's historic numerical tiers are not enforced as current policy.
 - Provider timeouts have bounded retries. A WhatsApp timeout/5xx or crash during delivery is **uncertain** and requires human review; it is not blindly retried. Exactly-once external delivery cannot be guaranteed by the Graph API.
 - A single elected worker processes one message at a time. This favors predictable ordering for the first clients; capacity is bounded by provider latency. Monitor queue depth and measure real traffic before onboarding high-volume clients. Unlimited profiles does not imply unlimited throughput.
@@ -87,3 +90,5 @@ Tests use PGlite's actual PostgreSQL engine locally, an ephemeral in-memory data
 - [Render blueprint reference](https://render.com/docs/blueprint-spec)
 
 These references informed adapter and deployment choices. Check Meta's current app dashboard and official documentation during onboarding; live account permissions and platform policy cannot be validated using the demo.
+
+See [Enhancement setup and verification](docs/ENHANCEMENTS.md) for Google setup, import limits, customer action flows and deployment checks.

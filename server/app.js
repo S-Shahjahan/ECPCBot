@@ -9,6 +9,9 @@ import { mountWebhook } from './webhook.js';
 import { publicClient, saveClient } from './clients.js';
 import { providers } from './prompts.js';
 import { generateReply, ProviderError } from './providers.js';
+import { mountEnhancements } from './enhancements.js';
+import { retrieveKnowledge } from './knowledge.js';
+import { actionInstructions } from './google.js';
 class DatabaseSessions extends session.Store {
   constructor(db) {
     super();
@@ -99,7 +102,7 @@ export function createApp({ db, config, generate = generateReply }) {
   });
   app.use('/webhook', express.raw({ type: 'application/json', limit: '1mb' }));
   mountWebhook(app, { db, config, box });
-  app.use('/api', express.json({ limit: '128kb' }));
+  app.use('/api', express.json({ limit: '512kb' }));
   app.use('/api', (_req, res, next) => {
     res.set('Cache-Control', 'no-store');
     next();
@@ -115,7 +118,7 @@ export function createApp({ db, config, generate = generateReply }) {
       cookie: {
         httpOnly: true,
         secure: config.production,
-        sameSite: 'strict',
+        sameSite: 'lax',
         maxAge: 8 * 60 * 60 * 1000,
       },
     }),
@@ -282,6 +285,8 @@ export function createApp({ db, config, generate = generateReply }) {
         client,
         box,
         masterPrompt: master.value.text,
+        knowledge: await retrieveKnowledge(db, client.id, message),
+        actionGuide: await actionInstructions(db, client.id),
         messages: [{ role: 'user', content: message }],
         demo: config.demo,
       });
@@ -446,6 +451,7 @@ export function createApp({ db, config, generate = generateReply }) {
         clients: clients.map(publicClient),
       });
   });
+  mountEnhancements(app, { db, box, config, generate });
   app.use('/api', (_req, res) =>
     res.status(404).json({ error: 'This endpoint does not exist.' }),
   );

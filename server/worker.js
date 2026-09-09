@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import nodemailer from 'nodemailer';
 import { generateReply, sendWhatsApp, ProviderError } from './providers.js';
 import { applyReceipt } from './receipts.js';
+import { retrieveKnowledge } from './knowledge.js';
+import { handleCustomerAction, actionInstructions } from './google.js';
 export function createWorker({
   db,
   box,
@@ -68,19 +70,31 @@ export function createWorker({
         "SELECT value FROM settings WHERE id='master_prompt'",
       );
       try {
-        result = await generate({
-          client,
-          box,
-          masterPrompt: master.value.text,
-          messages: [
-            ...history.reverse().map((m) => ({
-              role: m.direction === 'inbound' ? 'user' : 'assistant',
-              content: m.body,
-            })),
-            { role: 'user', content: job.body },
-          ],
-          demo: config.demo,
-        });
+        result =
+          (await handleCustomerAction({
+            db,
+            box,
+            config,
+            client,
+            conversation,
+            job,
+            owner,
+          })) ||
+          (await generate({
+            client,
+            box,
+            masterPrompt: master.value.text,
+            actionGuide: await actionInstructions(db, client.id),
+            knowledge: await retrieveKnowledge(db, client.id, job.body),
+            messages: [
+              ...history.reverse().map((m) => ({
+                role: m.direction === 'inbound' ? 'user' : 'assistant',
+                content: m.body,
+              })),
+              { role: 'user', content: job.body },
+            ],
+            demo: config.demo,
+          }));
         await db.query(
           'INSERT INTO llm_usage(id,client_id,conversation_id,source,tokens,cost) VALUES($1,$2,$3,$4,$5,$6)',
           [
@@ -181,6 +195,27 @@ export function createWorker({
     }
   }
   async function maintenance() {
+    const interrupted = await db.all(
+      "UPDATE customer_actions SET state='uncertain',result='Our team needs to check this request before any retry. [NEEDS_HUMAN]' WHERE state='executing' AND updated_at<now()-interval '120 seconds' RETURNING client_id,conversation_id",
+    );
+    for (const action of interrupted) {
+      await db.query("UPDATE conversations SET status='human' WHERE id=$1", [
+        action.conversation_id,
+      ]);
+      await alert(
+        action.client_id,
+        action.conversation_id,
+        'uncertain',
+        'Google action was interrupted. Check Gmail or Calendar before retrying; it may already have completed.',
+      );
+    }
+    await db.query('DELETE FROM google_oauth_states WHERE expires_at<now()');
+    await db.query(
+      "DELETE FROM customer_actions WHERE created_at<now()-interval '90 days'",
+    );
+    await db.query(
+      "UPDATE customer_actions SET state='expired',payload='',result='Confirmation expired. Please create a new request.' WHERE state='pending' AND expires_at<now()",
+    );
     await db.query(
       "DELETE FROM delivery_receipts WHERE created_at < now()-interval '90 days'",
     );

@@ -39,13 +39,29 @@ import {
   FileText,
 } from 'lucide-react';
 import './styles.css';
+import {
+  ConnectionTest,
+  ProviderTools,
+  PersonalityDraft,
+  KnowledgeLibrary,
+  GoogleIntegration,
+  LeadTracker,
+} from './Enhancements';
+import './enhancements.css';
 type Obj = Record<string, any>;
 let csrf = '';
 async function api(path: string, method = 'GET', body?: unknown) {
   const res = await fetch('/api' + path, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    headers: {
+      ...(body instanceof FormData
+        ? {}
+        : { 'Content-Type': 'application/json' }),
+      'X-CSRF-Token': csrf,
+    },
+    ...(body === undefined
+      ? {}
+      : { body: body instanceof FormData ? body : JSON.stringify(body) }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok)
@@ -71,16 +87,28 @@ const initials = (s: string) =>
     .map((s) => s[0])
     .join('');
 const providerNames: Obj = {
+  anthropic: 'Anthropic / Claude',
   gemini: 'Gemini',
   openai: 'OpenAI',
   deepseek: 'DeepSeek',
   glm: 'Z.ai / GLM',
+  groq: 'Groq',
+  mistral: 'Mistral',
+  openrouter: 'OpenRouter',
+  together: 'Together AI',
+  custom: 'Other / OpenAI compatible',
 };
 const models: Obj = {
+  anthropic: 'claude-sonnet-4-6',
   gemini: 'gemini-2.5-flash',
   openai: 'gpt-4o-mini',
   deepseek: 'deepseek-chat',
   glm: 'glm-4.5-flash',
+  groq: 'llama-3.3-70b-versatile',
+  mistral: 'mistral-small-latest',
+  openrouter: 'openai/gpt-4o-mini',
+  together: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+  custom: '',
 };
 function navigate(path: string) {
   window.location.hash = path;
@@ -243,13 +271,15 @@ function App() {
   if (!session) return <Loading />;
   if (!session.authenticated)
     return <Login demo={session.demo} onLogin={setSession} />;
-  const title = route.startsWith('/conversations')
-    ? 'Conversations'
-    : route.startsWith('/settings')
-      ? 'Workspace settings'
-      : route.startsWith('/alerts')
-        ? 'Needs attention'
-        : 'Clients';
+  const title = route.startsWith('/leads')
+    ? 'Lead tracker'
+    : route.startsWith('/conversations')
+      ? 'Conversations'
+      : route.startsWith('/settings')
+        ? 'Workspace settings'
+        : route.startsWith('/alerts')
+          ? 'Needs attention'
+          : 'Clients';
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -271,6 +301,7 @@ function App() {
           {[
             [LayoutGrid, 'Clients', '/'],
             [MessageSquare, 'Conversations', '/conversations'],
+            [Users, 'Lead tracker', '/leads'],
             [Bell, 'Needs attention', '/alerts'],
             [Settings2, 'Settings', '/settings'],
           ].map(([Icon, label, url]: any) => (
@@ -369,7 +400,7 @@ function App() {
             />
           ) : route.startsWith('/clients/') ? (
             <ClientEditor
-              id={route.split('/')[2]}
+              id={route.split('/')[2].split('?')[0]}
               notify={notify}
               changed={refresh}
               demo={session.demo}
@@ -381,6 +412,8 @@ function App() {
               notify={notify}
               changed={refresh}
             />
+          ) : route.startsWith('/leads') ? (
+            <LeadTracker api={api} />
           ) : route.startsWith('/alerts') ? (
             <Alerts refresh={version} notify={notify} changed={refresh} />
           ) : route.startsWith('/settings') ? (
@@ -424,9 +457,49 @@ function Login({
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const storyRef = useRef<HTMLElement>(null);
+  const frame = useRef(0);
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
   return (
-    <div className="login">
-      <section className="login-story">
+    <div
+      className="login"
+      onPointerMove={(e) => {
+        if (
+          e.pointerType !== 'mouse' ||
+          matchMedia('(prefers-reduced-motion: reduce)').matches
+        )
+          return;
+        const rect = e.currentTarget.getBoundingClientRect(),
+          x = (e.clientX - rect.left) / rect.width - 0.5,
+          y = (e.clientY - rect.top) / rect.height - 0.5;
+        cancelAnimationFrame(frame.current);
+        frame.current = requestAnimationFrame(() => {
+          storyRef.current?.style.setProperty('--move-x', `${x * 18}px`);
+          storyRef.current?.style.setProperty('--move-y', `${y * 18}px`);
+          storyRef.current?.style.setProperty(
+            '--light-x',
+            `${(x + 0.5) * 100}%`,
+          );
+          storyRef.current?.style.setProperty(
+            '--light-y',
+            `${(y + 0.5) * 100}%`,
+          );
+        });
+      }}
+      onPointerLeave={() => {
+        cancelAnimationFrame(frame.current);
+        storyRef.current?.style.setProperty('--move-x', '0px');
+        storyRef.current?.style.setProperty('--move-y', '0px');
+      }}
+    >
+      <section className="login-story" ref={storyRef}>
+        <div className="login-atmosphere" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+          <div className="orbit-ring" />
+          <div className="orbit-ring second" />
+        </div>
         <a className="brand" href="#/">
           <span className="brand-icon">
             <MessageCircle size={25} />
@@ -436,7 +509,7 @@ function Login({
         <div>
           <span className="eyebrow light">WHATSAPP, WITH A PERSONAL TOUCH</span>
           <h1>
-            Every client.
+            {'Every client. '}
             <br />
             Their own voice.
             <br />
@@ -449,6 +522,20 @@ function Login({
           </p>
           <div className="login-proof">
             <ShieldCheck size={21} /> Private by design. Built around you.
+          </div>
+        </div>
+        <div className="login-conversation" aria-hidden="true">
+          <div className="floating-bubble">
+            Hi! Can you help me choose?<span>09:41</span>
+          </div>
+          <div className="floating-bubble reply">
+            <Sparkles size={14} /> Of course. Tell me what you have in mind.
+            <CheckCheck size={14} />
+          </div>
+          <div className="typing-dots">
+            <i />
+            <i />
+            <i />
           </div>
         </div>
         <small>RELAY / WHATSAPP STUDIO</small>
@@ -922,7 +1009,9 @@ function ClientEditor({
     onboarding: [],
     change_reason: '',
   });
-  const [tab, setTab] = useState('profile');
+  const [tab, setTab] = useState(
+    location.hash.includes('?google=') ? 'integrations' : 'profile',
+  );
   const [loading, setLoading] = useState(!!id);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1032,6 +1121,8 @@ function ClientEditor({
             {[
               ['profile', 'Profile'],
               ['brain', 'AI & prompt'],
+              ['facts', 'Business facts'],
+              ['integrations', 'Integrations'],
               ['messages', 'Replies & handoff'],
               ['launch', 'Launch checklist'],
             ].map(([v, l]) => (
@@ -1148,6 +1239,7 @@ function ClientEditor({
                     onChange={(e) => set('meta_app_secret', e.target.value)}
                   />
                 </Field>
+                <ConnectionTest id={id} dirty={dirty} kind="meta" api={api} />
                 <div className="notice subtle">
                   <ShieldCheck size={18} />
                   <p>
@@ -1178,6 +1270,8 @@ function ClientEditor({
                       onChange={(e) => {
                         set('llm_provider', e.target.value);
                         set('llm_model', models[e.target.value]);
+                        set('llm_base_url', '');
+                        set('llm_api_key', '');
                       }}
                     >
                       {Object.entries(providerNames).map(([v, l]) => (
@@ -1222,6 +1316,13 @@ function ClientEditor({
                     onChange={(e) => set('llm_api_key', e.target.value)}
                   />
                 </Field>
+                <ProviderTools
+                  id={id}
+                  dirty={dirty}
+                  form={form}
+                  set={set}
+                  api={api}
+                />
                 <label className="toggle-row">
                   <span>
                     <strong>Use shared master rules</strong>
@@ -1252,6 +1353,12 @@ function ClientEditor({
                     placeholder="Be warm and reassuring. Keep replies short…"
                   />
                 </Field>
+                <PersonalityDraft
+                  id={id}
+                  dirty={dirty}
+                  api={api}
+                  onUse={(text) => set('system_prompt', text)}
+                />
                 <Field
                   label="Business facts"
                   hint="Hours, services, exact prices, booking steps, FAQs, and the never-say list."
@@ -1264,6 +1371,9 @@ function ClientEditor({
                     placeholder="Hours: Monday–Saturday, 9am–6pm&#10;Services: …&#10;Prices: …&#10;Booking: …"
                   />
                 </Field>
+                <p className="field-hint">
+                  Add documents, images and websites in the Business facts tab.
+                </p>
                 <details className="advanced">
                   <summary>Model limits & cost tracking</summary>
                   <div className="field-grid">
@@ -1347,6 +1457,25 @@ function ClientEditor({
                 )}
               </>
             )}
+            {tab === 'facts' && (
+              <>
+                <Field
+                  label="Direct business facts"
+                  hint="Owner-written facts are used alongside your approved library. Save the profile to apply changes."
+                >
+                  <textarea
+                    rows={8}
+                    maxLength={40000}
+                    value={form.business_facts}
+                    onChange={(e) => set('business_facts', e.target.value)}
+                    placeholder="Services, prices, hours, contact details and booking policies…"
+                  />
+                </Field>
+                <div className="form-divider" />
+                <KnowledgeLibrary id={id} api={api} />
+              </>
+            )}
+            {tab === 'integrations' && <GoogleIntegration id={id} api={api} />}
             {tab === 'messages' && (
               <>
                 <div className="section-heading">
@@ -2205,6 +2334,26 @@ function Settings({
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
+            <button
+              className="button secondary"
+              onClick={async () => {
+                try {
+                  const template = await api('/settings/prompt-template');
+                  setPrompt(template.text);
+                  setReason('Use expanded security and sales rules');
+                } catch (e: any) {
+                  notify(e.message);
+                }
+              }}
+            >
+              <ShieldCheck size={16} /> Load expanded rules for review
+            </button>
+            <p className="field-hint">
+              Core application boundaries always apply. Prompt rules reduce risk
+              but cannot guarantee immunity to injection. Imported content
+              cannot directly send emails, create bookings or access
+              credentials.
+            </p>
             <Field label="What changed, and why?">
               <input
                 placeholder="e.g. Added clearer guidance for unknown prices"
@@ -2295,38 +2444,6 @@ function Settings({
                 <Copy size={14} /> Copy URL
               </button>
             </div>
-          </section>
-          <section className="setup-card">
-            <h3>
-              <KeyRound size={19} /> Your launch actions
-            </h3>
-            <ol>
-              <li>
-                Create a Supabase project and add its database connection to
-                your host.
-              </li>
-              <li>
-                Set the admin password, encryption key, session secret and
-                webhook verify token on the host.
-              </li>
-              <li>Deploy to Railway or Render with a public HTTPS address.</li>
-              <li>
-                In Meta, verify the webhook with your server’s verify token and
-                subscribe to messages.
-              </li>
-              <li>
-                Add a permanent WhatsApp token, app secret and AI key in each
-                client profile.
-              </li>
-              <li>
-                Configure email alerts, external uptime monitoring and database
-                backups.
-              </li>
-              <li>
-                Test with a real phone, then activate your first assistant.
-              </li>
-            </ol>
-            <p>The project’s START-HERE guide walks you through each step.</p>
           </section>
           <section className="privacy-card">
             <ShieldCheck size={23} />

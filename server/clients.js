@@ -1,13 +1,12 @@
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import { MASTER_PROMPT } from './prompts.js';
+import { MASTER_PROMPT, providers, LEGACY_MASTER_PROMPT } from './prompts.js';
+import { externalUrl, badRequest } from './outbound.js';
 const schema = z.object({
   client_name: z.string().trim().min(2).max(120),
   phone_number_id: z.string().regex(/^\d{5,30}$/),
   waba_id: z.string().max(40).default(''),
-  llm_provider: z
-    .enum(['openai', 'gemini', 'deepseek', 'glm'])
-    .default('gemini'),
+  llm_provider: z.enum(Object.keys(providers)).default('gemini'),
   llm_model: z
     .string()
     .trim()
@@ -18,6 +17,7 @@ const schema = z.object({
       'Enter the exact API model ID without spaces, for example gemini-3.1-flash-lite.',
     ),
   system_prompt: z.string().max(30000).default(''),
+  llm_base_url: z.string().trim().max(500).default(''),
   business_facts: z.string().max(40000).default(''),
   use_master_prompt: z.boolean().default(true),
   welcome_message: z.string().max(1000).default(''),
@@ -60,6 +60,23 @@ export async function saveClient(db, box, input, id, config) {
   const old = id
     ? await db.one('SELECT * FROM clients WHERE id=$1', [id])
     : null;
+  if (data.llm_base_url) {
+    const base = externalUrl(data.llm_base_url);
+    if (base.search)
+      throw badRequest('The AI base URL must not contain query parameters.');
+    data.llm_base_url = data.llm_base_url.replace(/\/+$/, '');
+  }
+  if (data.llm_provider === 'custom' && !data.llm_base_url)
+    throw badRequest('Enter a base URL for the custom provider.');
+  if (
+    old &&
+    (old.config.llm_provider !== data.llm_provider ||
+      (old.config.llm_base_url || '') !== data.llm_base_url) &&
+    !data.llm_api_key?.trim()
+  )
+    throw badRequest(
+      'Re-enter the API key when changing provider or base URL, so an existing key cannot be sent to another service.',
+    );
   if (id && !old)
     throw Object.assign(new Error('Client not found.'), { status: 404 });
   const secrets = { ...(old?.secrets || {}) };
@@ -123,5 +140,10 @@ export async function initSettings(db) {
   await db.query(
     'INSERT INTO settings(id,value) VALUES($1,$2) ON CONFLICT DO NOTHING',
     ['master_prompt', JSON.stringify({ text: MASTER_PROMPT })],
+  );
+  // Only upgrade the untouched shipped default; preserve any owner-authored rules.
+  await db.query(
+    "UPDATE settings SET value=$1 WHERE id='master_prompt' AND value->>'text'=$2",
+    [JSON.stringify({ text: MASTER_PROMPT }), LEGACY_MASTER_PROMPT],
   );
 }

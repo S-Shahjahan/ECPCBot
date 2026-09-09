@@ -168,7 +168,7 @@ test('login cookie is httpOnly and a wrong production-mode password is rejected'
   const a = request.agent(secureApp);
   const s = await a.get('/api/session');
   assert(s.headers['set-cookie'][0].includes('HttpOnly'));
-  assert(s.headers['set-cookie'][0].includes('SameSite=Strict'));
+  assert(s.headers['set-cookie'][0].includes('SameSite=Lax'));
   assert.equal(
     (
       await a
@@ -499,7 +499,12 @@ test('provider HTTP adapter sends only selected client config and counts cost', 
     },
   });
   assert.match(body.messages[0].content, /TEST SHARED RULE/);
-  assert.match(body.messages[0].content, /Monday 10/);
+  assert.match(body.messages[1].content, /Monday 10/);
+  assert.equal(body.messages[1].role, 'user');
+  assert.match(
+    body.messages[0].content,
+    /NON-OVERRIDABLE APPLICATION BOUNDARIES/,
+  );
   assert.equal(result.tokens, 150);
   assert.equal(result.cost, 0.0002);
 });

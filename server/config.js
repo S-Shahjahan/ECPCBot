@@ -16,6 +16,8 @@ export function readConfig(env = process.env) {
     password: env.ADMIN_PASSWORD,
     verifyToken: env.WEBHOOK_VERIFY_TOKEN,
     metaSecret: env.META_APP_SECRET || '',
+    googleClientId: env.GOOGLE_CLIENT_ID || '',
+    googleClientSecret: env.GOOGLE_CLIENT_SECRET || '',
     graphVersion: env.META_GRAPH_VERSION || 'v23.0',
     trustProxy: Number(env.TRUST_PROXY || 0),
     localPath: env.LOCAL_DATABASE_PATH || '.local/database',
