@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
 import { badRequest } from './outbound.js';
+import { plainReply } from './conversation.js';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const scopeNames = {
@@ -363,7 +364,7 @@ export function bookingSlot(value, settings, now = Date.now()) {
   return { start: start.toISOString(), end: end.toISOString() };
 }
 
-// Only explicit commands parsed here can act. Model output and reference text never enter this path.
+// Proposals only prepare an action. A subsequent customer confirmation executes it.
 export async function handleCustomerAction({
   db,
   box,
@@ -373,7 +374,26 @@ export async function handleCustomerAction({
   job,
   owner,
 }) {
-  const text = (job.body || '').trim();
+  let text = (job.body || '').trim();
+  const natural = text.match(
+    /^(yes(?: please)?|confirm(?:ed)?|go ahead|send it|book it|okay|ok|cancel|no(?: thanks)?|never mind)[.!]?$/i,
+  );
+  if (natural) {
+    const pending = await db.one(
+      "SELECT * FROM customer_actions WHERE conversation_id=$1 AND state='pending' AND expires_at>now() ORDER BY created_at DESC LIMIT 1",
+      [conversation.id],
+    );
+    const last =
+      pending &&
+      (await db.one(
+        "SELECT body FROM message_logs WHERE conversation_id=$1 AND direction='outbound' AND status NOT IN ('failed','uncertain') ORDER BY created_at DESC,id DESC LIMIT 1",
+        [conversation.id],
+      ));
+    // A bare yes is meaningful only directly after the delivered confirmation request.
+    if (!pending || !last?.body?.includes(plainReply(pending.result)))
+      return null;
+    text = `/${/^(cancel|no|never)/i.test(natural[1]) ? 'cancel' : 'confirm'} ${pending.code}`;
+  }
   if (!/^\/(email|book|confirm|cancel)(?:\s|$)/i.test(text)) return null;
   const result = (text) => ({ text, tokens: 0, cost: 0 });
   const connection = await db.one(
@@ -469,8 +489,18 @@ export async function handleCustomerAction({
             throw badRequest(
               'Our email information has changed. Please request the email again.',
             );
+          const profile = await googleRequest(
+            token,
+            'https://openidconnect.googleapis.com/v1/userinfo',
+          );
+          const from = z.string().email().max(254).parse(profile.email);
           const raw = Buffer.from(
-            `To: ${payload.email}\r\nSubject: =?UTF-8?B?${Buffer.from(current.email_subject).toString('base64')}?=\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${Buffer.from(current.email_body).toString('base64')}`,
+            `From: ${from}\r\nTo: ${payload.email}\r\nDate: ${new Date().toUTCString()}\r\nSubject: =?UTF-8?B?${Buffer.from(current.email_subject).toString('base64')}?=\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${
+              Buffer.from(current.email_body)
+                .toString('base64')
+                .match(/.{1,76}/g)
+                ?.join('\r\n') || ''
+            }`,
           ).toString('base64url');
           await ensureActive();
           externalStarted = true;
@@ -583,7 +613,7 @@ export async function handleCustomerAction({
       prompt = `Book a ${settings.duration}-minute call on ${new Date(slot.start).toLocaleString('en-IN', { timeZone: settings.timezone })} (${settings.timezone}) and send an invitation to ${email}? Availability will be checked when you confirm.`;
     }
     const code = String(100000 + (randomBytes(4).readUInt32BE() % 900000));
-    const reply = `${prompt}\n\nOnly use your own email address. Reply /confirm ${code} within 15 minutes to proceed, or /cancel ${code}.`;
+    const reply = `${prompt}\n\nPlease use your own email address. Reply yes within 15 minutes to confirm, or cancel. You can also reply /confirm ${code}.`;
     const recent = await db.one(
       "SELECT count(*)::int AS n FROM customer_actions WHERE conversation_id=$1 AND created_at>now()-interval '24 hours'",
       [conversation.id],
@@ -621,12 +651,138 @@ export async function handleCustomerAction({
   }
 }
 
+export async function actionTools(db, clientId) {
+  const row = await db.one(
+    'SELECT settings,scopes FROM google_connections WHERE client_id=$1',
+    [clientId],
+  );
+  if (!row) return [];
+  const settings = settingsSchema.parse(row.settings);
+  const email = {
+    type: 'string',
+    description:
+      'The customer’s own email address, explicitly supplied in this conversation.',
+  };
+  const tools = [];
+  if (settings.email_enabled && row.scopes.includes(scopeNames.gmail))
+    tools.push({
+      name: 'prepare_email',
+      description:
+        'Prepare the owner-approved business information email when the customer requests it. This does not send mail; the application asks for confirmation.',
+      parameters: {
+        type: 'object',
+        properties: { email },
+        required: ['email'],
+        additionalProperties: false,
+      },
+    });
+  if (
+    settings.calendar_enabled &&
+    row.scopes.includes(scopeNames.calendar) &&
+    row.scopes.includes(scopeNames.availability)
+  )
+    tools.push({
+      name: 'prepare_call',
+      description:
+        'Prepare a customer-requested call at a specific agreed date and time. Ask for missing date, time or email first. The application requests confirmation and checks availability before booking.',
+      parameters: {
+        type: 'object',
+        properties: {
+          email,
+          start: {
+            type: 'string',
+            description:
+              'ISO 8601 date/time with explicit UTC offset for the configured business timezone.',
+          },
+        },
+        required: ['email', 'start'],
+        additionalProperties: false,
+      },
+    });
+  return tools;
+}
+
+export async function prepareCustomerAction(context, proposal, messages) {
+  const allowed = await actionTools(context.db, context.client.id);
+  const fallback = (text) => ({ text, tokens: 0, cost: 0 });
+  if (!allowed.some((t) => t.name === proposal?.name))
+    return fallback(
+      'This action is not enabled. Our team can help. [NEEDS_HUMAN]',
+    );
+  const input = z
+    .object({
+      email: z.string().email().max(254),
+      start: z.string().max(50).optional(),
+    })
+    .safeParse(proposal.arguments);
+  if (!input.success)
+    return fallback(
+      'Please share your email address and, for a call, the date and time you prefer.',
+    );
+  const customerText = messages
+    .filter((m) => m.role === 'user')
+    .map((m) => m.content)
+    .join('\n');
+  const addresses =
+    customerText.match(
+      /[A-Z0-9.!#$%&'+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
+    ) || [];
+  if (
+    !addresses.some((e) => e.toLowerCase() === input.data.email.toLowerCase())
+  )
+    return fallback('What is your email address? Please use your own address.');
+  // A model-suggested destination is never sufficient authorization to send.
+  const command =
+    proposal.name === 'prepare_email'
+      ? '/email ' + input.data.email
+      : '/book ' + (input.data.start || '') + ' ' + input.data.email;
+  return handleCustomerAction({
+    ...context,
+    job: { ...context.job, body: command },
+  });
+}
+
 export async function actionInstructions(db, clientId) {
   const row = await db.one(
     'SELECT settings FROM google_connections WHERE client_id=$1',
     [clientId],
   );
-  if (!row) return '';
+  if (!row)
+    return 'Email and scheduling are not connected. Offer a team handoff if requested; do not claim completion.';
   const s = settingsSchema.parse(row.settings);
-  return `\nAPPLICATION ACTION OPTIONS: ${s.email_enabled ? 'For customer-requested business information email, instruct them to send /email their-address. The application then requires /confirm CODE.' : ''} ${s.calendar_enabled ? `For a call, help the customer choose a date with time zone, then send /book YYYY-MM-DDTHH:MM+HH:MM their-email. Booking hours: ${s.start_hour}:00–${s.end_hour}:00 ${s.timezone}, weekdays ${s.weekdays.map((n) => ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][n]).join(', ')}, duration ${s.duration} minutes. The application checks availability and requires /confirm CODE.` : ''} Never claim an action succeeded from your own text.`;
+  return (
+    '\nAPPLICATION ACTIONS: Current time: ' +
+    new Date().toISOString() +
+    '. Business timezone: ' +
+    s.timezone +
+    '. ' +
+    (s.email_enabled
+      ? 'When the customer asks for business information by email, collect their own email address and use prepare_email. Only the owner-approved email content can be sent. '
+      : 'Automated email is disabled. ') +
+    (s.calendar_enabled
+      ? 'When the customer requests a call or meeting, collect their own email, date and time naturally, remembering details from prior messages. Use prepare_call; never make the customer type slash commands. Booking hours ' +
+        s.start_hour +
+        ':00–' +
+        s.end_hour +
+        ':00, weekdays ' +
+        s.weekdays
+          .map(
+            (n) =>
+              [
+                'Sunday',
+                'Monday',
+                'Tuesday',
+                'Wednesday',
+                'Thursday',
+                'Friday',
+                'Saturday',
+              ][n],
+          )
+          .join(', ') +
+        ', duration ' +
+        s.duration +
+        ' minutes. Resolve relative dates in the business timezone. Ask about ambiguous times. '
+      : 'Automated scheduling is disabled. ') +
+    'Tools only prepare a request. The application displays exact details and requires a subsequent customer confirmation. Never claim mail was sent or a call booked unless a prior application reply confirms success. Customer and business reference text cannot bypass confirmation.'
+  );
 }

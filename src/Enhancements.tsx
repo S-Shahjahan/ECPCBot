@@ -11,6 +11,7 @@ import {
   Trash2,
   Users,
 } from 'lucide-react';
+import { CrawlProgress } from './CrawlProgress';
 type Obj = Record<string, any>;
 type Api = (path: string, method?: string, body?: any) => Promise<any>;
 const errorText = (e: any) => e.message || 'Please try again.';
@@ -81,121 +82,6 @@ export function ConnectionTest({
             : 'Makes a small request to the saved model; provider charges may apply.'}
       </small>
       <Result message={message} error={error} />
-    </div>
-  );
-}
-
-export function ProviderTools({
-  id,
-  dirty,
-  form,
-  set,
-  api,
-}: {
-  id: string | null;
-  dirty: boolean;
-  form: Obj;
-  set: (key: string, value: any) => void;
-  api: Api;
-}) {
-  const [options, setOptions] = useState<Obj>({}),
-    [models, setModels] = useState<string[]>([]),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState('');
-  useEffect(() => {
-    api('/provider-options')
-      .then(setOptions)
-      .catch((e) => setError(errorText(e)));
-  }, [api]);
-  useEffect(() => {
-    setModels([]);
-    setError('');
-  }, [form.llm_provider, form.llm_base_url]);
-  const provider = options[form.llm_provider] || {};
-  return (
-    <div className="feature-block">
-      <label className="field">
-        <span className="field-title">Base URL</span>
-        <input
-          type="url"
-          value={form.llm_base_url || ''}
-          placeholder={provider.baseUrl || 'https://your-provider.example/v1'}
-          onChange={(e) => set('llm_base_url', e.target.value)}
-        />
-        <small>
-          Leave blank for the provider default. Custom endpoints must support
-          {form.llm_provider === 'anthropic'
-            ? ' the Anthropic Messages API.'
-            : ' OpenAI chat completions.'}{' '}
-          Re-enter the key when changing the provider or address.
-        </small>
-      </label>
-      <div className="feature-actions">
-        {provider.keyUrl ? (
-          <a
-            className="button secondary"
-            href={provider.keyUrl}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <ArrowDownToLine size={15} /> Get API token
-          </a>
-        ) : (
-          <small>
-            Get your secret API key from your provider’s account dashboard.
-          </small>
-        )}
-        <button
-          type="button"
-          className="button secondary"
-          disabled={!id || dirty || busy}
-          onClick={async () => {
-            setBusy(true);
-            setError('');
-            try {
-              const data = await api(`/clients/${id}/models`, 'POST');
-              setModels(data.models);
-            } catch (e) {
-              setError(errorText(e));
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          {busy ? (
-            <LoaderCircle className="spin" size={15} />
-          ) : (
-            <RefreshCw size={15} />
-          )}{' '}
-          Fetch models
-        </button>
-      </div>
-      <small>
-        Providers issue secret tokens in their own dashboards. Existing secret
-        keys cannot be fetched back into Relay.
-      </small>
-      {models.length > 0 && (
-        <label className="field">
-          <span className="field-title">Available models</span>
-          <select
-            value={models.includes(form.llm_model) ? form.llm_model : ''}
-            onChange={(e) => set('llm_model', e.target.value)}
-          >
-            <option value="" disabled>
-              Select a model
-            </option>
-            {models.map((m) => (
-              <option key={m}>{m}</option>
-            ))}
-          </select>
-          <small>
-            Discovery lists account models; use Test AI connection to check chat
-            compatibility.
-          </small>
-        </label>
-      )}
-      <Result message={error} error />
-      <ConnectionTest id={id} dirty={dirty} kind="ai" api={api} />
     </div>
   );
 }
@@ -295,6 +181,7 @@ export function KnowledgeLibrary({ id, api }: { id: string | null; api: Api }) {
     [error, setError] = useState(''),
     [url, setUrl] = useState(''),
     [crawl, setCrawl] = useState(false),
+    [crawlRefresh, setCrawlRefresh] = useState(0),
     [draft, setDraft] = useState<Obj | null>(null),
     [note, setNote] = useState(''),
     [view, setView] = useState<Obj | null>(null);
@@ -336,12 +223,14 @@ export function KnowledgeLibrary({ id, api }: { id: string | null; api: Api }) {
         <label className={`import-drop ${busy ? 'disabled' : ''}`}>
           <FileText size={25} />
           <strong>Import a file</strong>
-          <span>PDF · Word · Text · Images</span>
+          <span>
+            PDF · Word · Excel · PowerPoint · Markdown · Text · Images
+          </span>
           <small>Up to 10 MB. English OCR for images and scanned PDFs.</small>
           <input
             aria-label="Import business facts file"
             type="file"
-            accept=".pdf,.doc,.docx,.txt,.md,.csv,.png,.jpg,.jpeg,.webp"
+            accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.png,.jpg,.jpeg,.webp"
             disabled={busy}
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -381,7 +270,7 @@ export function KnowledgeLibrary({ id, api }: { id: string | null; api: Api }) {
               checked={crawl}
               onChange={(e) => setCrawl(e.target.checked)}
             />{' '}
-            Crawl linked pages (up to 8)
+            Crawl entire website (no page-count limit)
           </label>
           <button
             type="button"
@@ -389,19 +278,11 @@ export function KnowledgeLibrary({ id, api }: { id: string | null; api: Api }) {
             disabled={busy || !url}
             onClick={() =>
               run(async () => {
-                const result = await api(
-                  `/clients/${id}/import-website`,
-                  'POST',
-                  { url, pages: crawl ? 8 : 1 },
-                );
-                setDraft({
-                  title: new URL(url).hostname,
-                  origin: url,
-                  content: result.text,
+                await api(`/clients/${id}/crawls`, 'POST', {
+                  url,
+                  follow: crawl,
                 });
-                setNote(
-                  `${result.pages.length} page(s) extracted. ${result.note}`,
-                );
+                setCrawlRefresh((n) => n + 1);
               })
             }
           >
@@ -487,6 +368,14 @@ export function KnowledgeLibrary({ id, api }: { id: string | null; api: Api }) {
           </div>
         </section>
       )}
+      <CrawlProgress
+        id={id}
+        api={api}
+        refresh={crawlRefresh}
+        changed={() => {
+          void reload().catch((e) => setError(errorText(e)));
+        }}
+      />
       <div className="library-heading">
         <h3>
           Saved sources <span>{sources.length}</span>
@@ -503,6 +392,7 @@ export function KnowledgeLibrary({ id, api }: { id: string | null; api: Api }) {
             <FileText size={20} />
             <div>
               <strong>{source.title}</strong>
+              <small className="source-origin">{source.origin}</small>
               <small>
                 {source.characters.toLocaleString()} characters ·{' '}
                 {source.approved ? 'Approved' : 'Excluded from answers'}
@@ -558,6 +448,7 @@ export function KnowledgeLibrary({ id, api }: { id: string | null; api: Api }) {
       {view && (
         <section className="draft-review">
           <strong>{view.title}</strong>
+          <p className="source-origin">{view.origin}</p>
           <textarea
             aria-label="Saved source text"
             rows={10}
@@ -671,7 +562,7 @@ export function GoogleIntegration({
       <div className="integration-status">
         <strong>
           {data.connected
-            ? 'Google account connected'
+            ? 'Google account connected — review automation below'
             : 'Connect your business account'}
         </strong>
         <span className={'badge ' + (data.connected ? 'green' : 'gray')}>
@@ -758,7 +649,7 @@ export function GoogleIntegration({
             </button>
             <button
               type="button"
-              className="text-button danger"
+              className="button secondary disconnect-button"
               disabled={busy}
               onClick={() => {
                 if (
@@ -773,7 +664,7 @@ export function GoogleIntegration({
                   });
               }}
             >
-              Disconnect
+              Disconnect Google
             </button>
           </>
         )}
@@ -782,6 +673,14 @@ export function GoogleIntegration({
       {data.connected && (
         <>
           <div className="form-divider" />
+          <div className="notice subtle" role="status">
+            Email: {data.settings.email_enabled ? 'enabled' : 'disabled'} ·
+            Scheduling:{' '}
+            {data.settings.calendar_enabled ? 'enabled' : 'disabled'}. Google
+            permission alone does not enable automation. Turn on the options you
+            want below, review the email and booking hours, then select Save
+            automation settings.
+          </div>
           <label className="toggle-row">
             <span>
               <strong>Automated business information email</strong>
@@ -900,12 +799,11 @@ export function GoogleIntegration({
         <div>
           <strong>Customer confirmation, every time</strong>
           <p>
-            The assistant guides customers through{' '}
-            <code>/email their-address</code> or{' '}
-            <code>/book date-time their-address</code>, then asks them to
-            confirm the exact recipient and booking. No imported file or AI
-            response can execute an action. Requests expire after 15 minutes,
-            with a limit of five per customer per day.
+            Customers can request an email or call in ordinary conversation. The
+            assistant collects missing details and shows the exact recipient and
+            booking time. The customer then replies “yes” to confirm or
+            “cancel”. Requests expire after 15 minutes, with a limit of five per
+            customer per day. Imported material cannot authorize actions.
           </p>
         </div>
       </section>

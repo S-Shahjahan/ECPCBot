@@ -103,9 +103,18 @@ ALTER TABLE worker_lock ENABLE ROW LEVEL SECURITY;
 ALTER TABLE login_attempts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE llm_usage ENABLE ROW LEVEL SECURITY;
 ALTER TABLE delivery_receipts ENABLE ROW LEVEL SECURITY;
+CREATE TABLE IF NOT EXISTS crawl_runs (
+ id text PRIMARY KEY, client_id text NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+ url text NOT NULL, follow_links boolean NOT NULL DEFAULT false, status text NOT NULL DEFAULT 'running',
+ queue jsonb NOT NULL DEFAULT '[]', visited jsonb NOT NULL DEFAULT '[]', completed int NOT NULL DEFAULT 0,
+ failed int NOT NULL DEFAULT 0, note text NOT NULL DEFAULT '', owner text, lease_until timestamptz,
+ created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS crawl_runs_active_client ON crawl_runs(client_id) WHERE status='running';
+ALTER TABLE crawl_runs ENABLE ROW LEVEL SECURITY;
 DO $$ BEGIN
  IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='anon') THEN
   REVOKE ALL ON clients,settings,prompt_history,conversations,message_logs,jobs,alerts,sessions,worker_lock,login_attempts,llm_usage,delivery_receipts FROM anon, authenticated;
-  REVOKE ALL ON knowledge_sources,knowledge_chunks,google_connections,google_oauth_states,customer_actions FROM anon, authenticated;
+  REVOKE ALL ON knowledge_sources,knowledge_chunks,google_connections,google_oauth_states,customer_actions,crawl_runs FROM anon, authenticated;
  END IF;
 END $$;

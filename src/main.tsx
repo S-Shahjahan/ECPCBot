@@ -41,13 +41,13 @@ import {
 import './styles.css';
 import {
   ConnectionTest,
-  ProviderTools,
   PersonalityDraft,
   KnowledgeLibrary,
   GoogleIntegration,
   LeadTracker,
 } from './Enhancements';
 import './enhancements.css';
+import { ProviderSetup } from './ProviderSetup';
 type Obj = Record<string, any>;
 let csrf = '';
 async function api(path: string, method = 'GET', body?: unknown) {
@@ -1018,6 +1018,11 @@ function ClientEditor({
   const [dirty, setDirty] = useState(false);
   const [question, setQuestion] = useState('Hi, what time are you open?');
   const [answer, setAnswer] = useState<Obj | null>(null);
+  const [testHistory, setTestHistory] = useState<Obj[]>([]);
+  useEffect(() => {
+    setTestHistory([]);
+    setAnswer(null);
+  }, [id]);
   const [testError, setTestError] = useState('');
   const [testing, setTesting] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -1263,66 +1268,7 @@ function ClientEditor({
                     </p>
                   </div>
                 </div>
-                <div className="field-grid">
-                  <Field label="AI provider">
-                    <select
-                      value={form.llm_provider}
-                      onChange={(e) => {
-                        set('llm_provider', e.target.value);
-                        set('llm_model', models[e.target.value]);
-                        set('llm_base_url', '');
-                        set('llm_api_key', '');
-                      }}
-                    >
-                      {Object.entries(providerNames).map(([v, l]) => (
-                        <option value={v} key={v}>
-                          {l}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field
-                    label="Model ID"
-                    hint={
-                      form.llm_provider === 'gemini'
-                        ? 'Example: gemini-3.1-flash-lite. Use the exact API model ID, without spaces.'
-                        : 'Use the exact API model ID from your provider, without spaces.'
-                    }
-                  >
-                    <input
-                      value={form.llm_model}
-                      onChange={(e) => set('llm_model', e.target.value)}
-                      required
-                    />
-                  </Field>
-                </div>
-                <Field
-                  label="AI API key"
-                  hint={
-                    form.has_llm_api_key
-                      ? 'Key saved. Leave blank to keep it.'
-                      : 'Each client can use a separate account and key.'
-                  }
-                >
-                  <input
-                    type="password"
-                    autoComplete="new-password"
-                    value={form.llm_api_key || ''}
-                    placeholder={
-                      form.has_llm_api_key
-                        ? '••••••••••••  saved securely'
-                        : 'Paste API key'
-                    }
-                    onChange={(e) => set('llm_api_key', e.target.value)}
-                  />
-                </Field>
-                <ProviderTools
-                  id={id}
-                  dirty={dirty}
-                  form={form}
-                  set={set}
-                  api={api}
-                />
+                <ProviderSetup id={id} form={form} set={set} api={api} />
                 <label className="toggle-row">
                   <span>
                     <strong>Use shared master rules</strong>
@@ -1359,21 +1305,7 @@ function ClientEditor({
                   api={api}
                   onUse={(text) => set('system_prompt', text)}
                 />
-                <Field
-                  label="Business facts"
-                  hint="Hours, services, exact prices, booking steps, FAQs, and the never-say list."
-                >
-                  <textarea
-                    className="facts-input"
-                    rows={9}
-                    value={form.business_facts}
-                    onChange={(e) => set('business_facts', e.target.value)}
-                    placeholder="Hours: Monday–Saturday, 9am–6pm&#10;Services: …&#10;Prices: …&#10;Booking: …"
-                  />
-                </Field>
-                <p className="field-hint">
-                  Add documents, images and websites in the Business facts tab.
-                </p>
+
                 <details className="advanced">
                   <summary>Model limits & cost tracking</summary>
                   <div className="field-grid">
@@ -1664,8 +1596,17 @@ function ClientEditor({
                 <span className="chat-day">PROMPT PLAYGROUND</span>
                 {answer ? (
                   <>
-                    <div className="bubble incoming">{answer.question}</div>
-                    <div className="bubble outgoing">{answer.text}</div>
+                    {testHistory.map((turn, i) => (
+                      <div
+                        key={i}
+                        className={
+                          'bubble ' +
+                          (turn.role === 'user' ? 'incoming' : 'outgoing')
+                        }
+                      >
+                        {turn.content}
+                      </div>
+                    ))}
                     {answer.needsHuman && (
                       <Badge tone="orange">Human handoff triggered</Badge>
                     )}
@@ -1686,6 +1627,17 @@ function ClientEditor({
               </div>
             </div>
             <div className="test-input">
+              <button
+                className="text-button"
+                disabled={testing}
+                onClick={() => {
+                  setTestHistory([]);
+                  setAnswer(null);
+                  setTestError('');
+                }}
+              >
+                New test conversation
+              </button>
               <textarea
                 aria-label="Test message"
                 rows={3}
@@ -1699,14 +1651,21 @@ function ClientEditor({
                 onClick={async () => {
                   setTesting(true);
                   setTestError('');
-                  setAnswer(null);
                   try {
                     const result = await api(
                       '/clients/' + id + '/test',
                       'POST',
-                      { message: question },
+                      { message: question, history: testHistory },
                     );
                     setAnswer({ ...result, question });
+                    setTestHistory((previous) =>
+                      [
+                        ...previous,
+                        { role: 'user', content: question },
+                        { role: 'assistant', content: result.text },
+                      ].slice(-100),
+                    );
+                    setQuestion('');
                   } catch (e: any) {
                     setTestError(e.message);
                   } finally {

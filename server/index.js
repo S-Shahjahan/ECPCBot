@@ -3,6 +3,7 @@ import { createDatabase } from './db.js';
 import { createApp } from './app.js';
 import { initSettings } from './clients.js';
 import { createWorker } from './worker.js';
+import { createCrawlWorker } from './crawls.js';
 import { seedDemo } from './seed.js';
 import express from 'express';
 import { fileURLToPath } from 'node:url';
@@ -31,12 +32,15 @@ const server = app.listen(
   },
 );
 worker.start();
+const crawler = createCrawlWorker({ db });
+crawler.start();
 let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   server.close();
   await worker.stop();
+  await crawler.stop();
   await db.close();
   process.exit(0);
 }

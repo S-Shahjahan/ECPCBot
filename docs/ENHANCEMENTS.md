@@ -3,7 +3,7 @@
 ## Where to find the features
 
 - **Profile:** Test Meta connection checks the saved token and phone number, and WABA app subscriptions when a WABA ID is saved. It does not send a WhatsApp message or prove the inbound webhook works. Complete a real inbound/outbound test after registering the new number.
-- **AI & prompt:** choose a provider, optional base URL and model. Get API token opens the provider's key dashboard; secret keys cannot be fetched back. Fetch models lists available IDs. Test AI connection makes a small paid request. Save changes before testing. Changing the provider or base URL requires entering the intended key again.
+- **AI & prompt:** choose Provider → editable prefilled Base URL → API key → automatically fetched Model → Test API → Save. Discovery and testing use the unsaved values without changing saved credentials. Get API token opens the provider’s key dashboard. Changing the provider or endpoint requires entering the intended key again.
 - **Business facts:** direct owner-written facts plus the reviewed import library. Files/websites first produce editable extracted text; approval adds it to answers. Exclude or delete stale sources. Facts are not automatically refreshed.
 - **AI & prompt → Draft from business facts:** generates a proposed personality from saved facts and relevant approved source passages. Review the draft, choose Use this draft, then save the client. Demo mode produces a labeled template instead of a paid AI draft.
 - **Integrations:** connect Google, review exact email content and booking settings, then enable the desired actions.
@@ -31,29 +31,31 @@ Reference: [Google server OAuth flow](https://developers.google.com/identity/pro
 
 ## Customer email and call flows
 
-The assistant helps the customer choose a supported action. Only exact customer commands are eligible; model output, source text and generated drafts cannot execute actions.
+The assistant collects the customer’s email, and the desired date/time for a call, through ordinary conversation. Model tools prepare a request; they cannot send or book directly. The recipient must have appeared in customer messages.
 
-- `/email customer@example.com` prepares the owner-approved information email to the specified address.
-- `/book 2026-10-12T14:00+05:30 customer@example.com` requests a call at that date/time. Use the actual desired future date. The customer must include the time zone.
-- The application echoes the recipient and booking details, then requires `/confirm 123456` using the generated code within 15 minutes. `/cancel 123456` cancels the pending request.
+- Ask “Please email me the details at my-address@example.com” or “Can we arrange a call tomorrow afternoon?” The assistant asks for missing details and uses the configured business timezone.
+- The application echoes the exact recipient and date/time, then accepts “yes”, “yes please” or “go ahead” within 15 minutes. A natural confirmation is accepted only immediately after a successfully delivered confirmation request. “Cancel” cancels the pending request.
+- Existing `/email`, `/book`, `/confirm CODE` and `/cancel CODE` commands remain supported. A model with function-calling support is required for conversational preparation; use Test API and a playground request to check the selected model.
 
 There is a limit of five new requests per customer per day. A new request replaces the customer's pending request. Bookings must be at least one hour ahead and within 90 days, and inside the owner's configured hours. Calendar availability is checked at confirmation. An event and invitation are created only after this succeeds. Appointment confirmation does not create a video meeting link; the business should describe its call method in its facts.
 
 The email body is the exact approved template, never arbitrary model-generated mail or an attached chat transcript. No external send occurs during sandbox tests or demo operation. Paused clients, human-owned conversations, expired WhatsApp windows and lost worker ownership block new external actions. A request already accepted by Google cannot be recalled. Timeouts or interrupted delivery are not retried automatically; the team must check Google and the conversation. Calendar availability checks cannot prevent someone independently creating a conflicting event at the same moment.
 
+Chat replies now include early preferences plus recent conversation history within a bounded context budget. The playground keeps a multi-turn test conversation until New test conversation is selected. Customer replies are instructed and normalized to plain text.
+
 ## Import and retrieval limits
 
-- One file at a time, maximum 10 MB; PDF, DOCX, legacy DOC, UTF-8 TXT/Markdown/CSV, PNG/JPEG/WebP.
+- One file at a time, maximum 10 MB; PDF, DOCX, legacy DOC, XLS/XLSX, PPT/PPTX, UTF-8 TXT/Markdown/CSV, PNG/JPEG/WebP. Spreadsheets use displayed/cached cell values; formulas are never executed. Presentation images/charts are not automatically transcribed; review extracted slide text.
 - Text PDFs: up to 80 pages. PDFs requiring OCR: up to 10 pages. Protected, corrupt or overly complex documents are rejected. File extraction runs in a separate process with a 90-second timeout and a bounded JS heap.
 - Images/scanned PDFs: local English OCR, with a 20-million-pixel input limit and downscaling. Original uploads never go to an AI provider and are not retained. OCR extracts visible text, not image meaning. Verify names, prices and dates. Other languages can be entered directly as text; multilingual OCR is not included.
-- Each source: up to 100,000 extracted characters. Each client: up to 100 sources and one million characters. Large website results may be truncated; the preview shows what will be saved.
-- Websites: public static HTTPS HTML/text, at most eight linked pages on the same origin. Crawl rules are respected; private addresses, credential URLs and unsafe redirects are blocked. JavaScript-rendered/private pages need direct text or document import. Crawl failures are shown before approval.
+- Each file/source: up to 100,000 extracted characters. Website pages are saved individually, with an explicit warning for a page exceeding this size. There is no fixed page-count or library source-count limit; storage use grows with the library.
+- Websites: public HTTPS pages, including JavaScript-rendered content. Entire-site crawling follows same-origin links without a fixed page-count limit. A durable background queue survives restarts and supports Stop/Resume. Each page becomes an unapproved library source; review and approve it before use. Website crawl rules and delays are respected. Private addresses, credential URLs, cross-origin navigations and non-GET requests are blocked. Rendering has per-page time, request and byte limits; individual failures are reported. Login-protected sites and content requiring form submissions need direct import.
 - Search is isolated to approved sources for the selected client. Up to ten text passages are supplied alongside direct facts. This keeps provider context bounded but cannot guarantee that every useful passage is selected. For a large multilingual catalogue or semantic matching, evaluate a multilingual embedding model and vector retrieval later. A separate embedding API is not needed for this release.
 - Business sources, personality and prompt history persist until deleted. Chat/contact/action records have 90-day retention; inactive conversation deletion cascades lead details and actions. Downloaded CSV files and provider-held data are outside Relay's retention control.
 
 ## Deployment and live verification
 
-The existing Dockerfile includes the new JavaScript/native dependencies through `npm ci`; no desktop Word installation is required. The schema is additive and applied on startup. Keep the existing encryption key unchanged. Reserve sufficient service memory for OCR (start with at least 1 GB and observe actual peak use); one extraction runs at a time per process.
+The Dockerfile installs Chromium and its Linux dependencies as well as file readers. No desktop Office installation is required. Railway must build the supplied Dockerfile so browser dependencies are present. The schema is additive and applied on startup. Keep the existing encryption key unchanged. Reserve sufficient service memory for OCR (start with at least 1 GB and observe actual peak use); one extraction runs at a time per process.
 
 After deploying the latest commit:
 

@@ -5,13 +5,10 @@ import { randomUUID } from 'node:crypto';
 import { providers, MASTER_PROMPT } from './prompts.js';
 import { generateReply, ProviderError } from './providers.js';
 import { publicFetch, badRequest } from './outbound.js';
-import {
-  extractFile,
-  crawlWebsite,
-  saveSource,
-  retrieveKnowledge,
-} from './knowledge.js';
+import { extractFile, saveSource, retrieveKnowledge } from './knowledge.js';
 import { mountGoogle } from './google.js';
+import { mountCrawls } from './crawls.js';
+import { mountAISetup } from './ai-setup.js';
 
 export function csvCell(value) {
   let text = String(value ?? '').replace(/\0/g, '');
@@ -24,6 +21,7 @@ export function mountEnhancements(
   { db, box, config, generate = generateReply },
 ) {
   mountGoogle(app, { db, box, config });
+  mountCrawls(app, { db });
   const limiter = rateLimit({
     windowMs: 60000,
     limit: 12,
@@ -33,6 +31,7 @@ export function mountEnhancements(
     storage: multer.memoryStorage(),
     limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 0, parts: 2 },
   }).single('file');
+  mountAISetup(app, { db, box, config, generate, limiter });
   const client = async (id) => {
     const row = await db.one('SELECT * FROM clients WHERE id=$1', [id]);
     if (!row)
@@ -180,16 +179,6 @@ export function mountEnhancements(
       res.json(await extractFile(req.file));
     },
   );
-  app.post('/api/clients/:id/import-website', limiter, async (req, res) => {
-    await client(req.params.id);
-    const data = z
-      .object({
-        url: z.string().max(2000),
-        pages: z.number().int().min(1).max(8),
-      })
-      .parse(req.body);
-    res.json(await crawlWebsite(data.url, data.pages));
-  });
   app.post('/api/clients/:id/sources', async (req, res) => {
     await client(req.params.id);
     const input = z

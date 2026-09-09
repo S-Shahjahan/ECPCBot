@@ -5,6 +5,7 @@ import { createWorker } from 'tesseract.js';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import sharp from 'sharp';
+import { officeText } from './office.js';
 const require = createRequire(import.meta.url);
 async function ocr(buffer) {
   // Decode only supported raster images, with a hard pixel limit before OCR allocation.
@@ -43,6 +44,10 @@ process.once('message', async ({ base64, name }) => {
       text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
       if (text.includes('\0'))
         throw new Error('Text files must be UTF-8, not binary.');
+    } else if (['.xlsx', '.xls', '.pptx', '.ppt'].includes(ext)) {
+      text = await officeText(buffer, ext);
+      note =
+        'Extracted cell values or slide text. Review reading order, formulas with cached values, charts and image-only content; embedded images are not transcribed.';
     } else if (ext === '.docx')
       text = (await mammoth.extractRawText({ buffer })).value;
     else if (ext === '.doc')
@@ -84,7 +89,7 @@ process.once('message', async ({ base64, name }) => {
         'English OCR extracted visible text, not visual meaning. Check all extracted facts before approval.';
     } else
       throw new Error(
-        'Use PDF, DOCX, DOC, TXT, Markdown, CSV, PNG, JPEG or WebP.',
+        'Use PDF, Word, Excel (XLS/XLSX), PowerPoint (PPT/PPTX), TXT, Markdown, CSV, PNG, JPEG or WebP.',
       );
     text = text.replace(/\0/g, '').trim();
     if (!text)

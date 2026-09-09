@@ -3,7 +3,13 @@ import nodemailer from 'nodemailer';
 import { generateReply, sendWhatsApp, ProviderError } from './providers.js';
 import { applyReceipt } from './receipts.js';
 import { retrieveKnowledge } from './knowledge.js';
-import { handleCustomerAction, actionInstructions } from './google.js';
+import {
+  handleCustomerAction,
+  actionInstructions,
+  actionTools,
+  prepareCustomerAction,
+} from './google.js';
+import { plainReply } from './conversation.js';
 export function createWorker({
   db,
   box,
@@ -63,9 +69,18 @@ export function createWorker({
       };
     else {
       const history = await db.all(
-        `SELECT direction,body FROM message_logs WHERE conversation_id=$1 AND meta_id IS DISTINCT FROM $2 AND body IS NOT NULL AND direction IN ('inbound','outbound') AND status NOT IN ('failed','uncertain') ORDER BY created_at DESC,id DESC LIMIT 16`,
+        `WITH eligible AS (SELECT id,created_at,direction,body FROM message_logs WHERE conversation_id=$1 AND meta_id IS DISTINCT FROM $2 AND body IS NOT NULL AND direction IN ('inbound','outbound') AND status NOT IN ('failed','uncertain')) SELECT * FROM ((SELECT * FROM eligible ORDER BY created_at DESC,id DESC LIMIT 96) UNION (SELECT * FROM eligible ORDER BY created_at,id LIMIT 8)) context ORDER BY created_at DESC,id DESC`,
         [conversation.id, job.meta_id],
       );
+      const messages = [
+        ...history
+          .reverse()
+          .map((m) => ({
+            role: m.direction === 'inbound' ? 'user' : 'assistant',
+            content: m.body,
+          })),
+        { role: 'user', content: job.body },
+      ];
       const master = await db.one(
         "SELECT value FROM settings WHERE id='master_prompt'",
       );
@@ -85,16 +100,27 @@ export function createWorker({
             box,
             masterPrompt: master.value.text,
             actionGuide: await actionInstructions(db, client.id),
-            knowledge: await retrieveKnowledge(db, client.id, job.body),
-            messages: [
-              ...history.reverse().map((m) => ({
-                role: m.direction === 'inbound' ? 'user' : 'assistant',
-                content: m.body,
-              })),
-              { role: 'user', content: job.body },
-            ],
+            actionTools: await actionTools(db, client.id),
+            knowledge: await retrieveKnowledge(
+              db,
+              client.id,
+              messages
+                .filter((m) => m.role === 'user')
+                .slice(-6)
+                .map((m) => m.content)
+                .join(' '),
+            ),
+            messages,
             demo: config.demo,
           }));
+        if (result.proposedAction) {
+          const prepared = await prepareCustomerAction(
+            { db, box, config, client, conversation, job, owner },
+            result.proposedAction,
+            messages,
+          );
+          result.text = prepared.text;
+        }
         await db.query(
           'INSERT INTO llm_usage(id,client_id,conversation_id,source,tokens,cost) VALUES($1,$2,$3,$4,$5,$6)',
           [
@@ -117,6 +143,7 @@ export function createWorker({
         );
       }
     }
+    if (!manual) result.text = plainReply(result.text);
     const needsHuman =
       result.text.includes('[NEEDS_HUMAN]') && client.config.handoff_enabled;
     let reply =

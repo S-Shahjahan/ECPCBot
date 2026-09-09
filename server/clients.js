@@ -71,7 +71,16 @@ export async function saveClient(db, box, input, id, config) {
   if (
     old &&
     (old.config.llm_provider !== data.llm_provider ||
-      (old.config.llm_base_url || '') !== data.llm_base_url) &&
+      (
+        old.config.llm_base_url ||
+        providers[old.config.llm_provider]?.baseUrl ||
+        ''
+      ).replace(/\/+$/, '') !==
+        (
+          data.llm_base_url ||
+          providers[data.llm_provider]?.baseUrl ||
+          ''
+        ).replace(/\/+$/, '')) &&
     !data.llm_api_key?.trim()
   )
     throw badRequest(
