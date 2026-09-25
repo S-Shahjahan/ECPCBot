@@ -2,6 +2,7 @@ import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
 import { badRequest } from './outbound.js';
 import { plainReply } from './conversation.js';
+import { emailRequested, sourceHash } from './quotes.js';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const scopeNames = {
@@ -66,13 +67,25 @@ async function tokenRequest(config, parameters) {
     }),
     signal: AbortSignal.timeout(20000),
   });
-  if (!response.ok)
-    throw badRequest(
-      'Google access could not be refreshed. Reconnect the Google account and check the OAuth settings.',
-    );
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    const hint =
+      error.error === 'invalid_grant'
+        ? 'Google offline access expired or was revoked. Reconnect Google and grant the requested permissions. Check whether the OAuth app is still in Testing.'
+        : error.error === 'invalid_client'
+          ? 'Google rejected the OAuth client credentials. Check GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, then reconnect.'
+          : 'Google access could not be refreshed. Reconnect Google and check the OAuth settings.';
+    throw badRequest(hint);
+  }
   return response.json();
 }
-export async function googleToken(db, box, config, clientId) {
+export async function googleToken(
+  db,
+  box,
+  config,
+  clientId,
+  forceRefresh = false,
+) {
   const row = await db.one(
     'SELECT * FROM google_connections WHERE client_id=$1',
     [clientId],
@@ -86,7 +99,12 @@ export async function googleToken(db, box, config, clientId) {
       'Google credentials cannot be decrypted. Reconnect the account.',
     );
   }
-  if (!tokens.access_token || tokens.expires_at < Date.now() + 60000) {
+  if (
+    forceRefresh ||
+    !tokens.access_token ||
+    !tokens.expires_at ||
+    tokens.expires_at < Date.now() + 60000
+  ) {
     if (!tokens.refresh_token)
       throw badRequest(
         'Google offline access is missing. Disconnect and reconnect the account.',
@@ -123,6 +141,14 @@ async function googleRequest(token, url, body, method = body ? 'POST' : 'GET') {
     );
   return response.json();
 }
+export function googlePermissions(scopes = '') {
+  const granted = new Set(scopes.split(/\s+/));
+  return {
+    gmail: granted.has(scopeNames.gmail),
+    calendar:
+      granted.has(scopeNames.calendar) && granted.has(scopeNames.availability),
+  };
+}
 export function mountGoogle(app, { db, box, config }) {
   const ready = () =>
     Boolean(config.googleClientId && config.googleClientSecret);
@@ -135,6 +161,7 @@ export function mountGoogle(app, { db, box, config }) {
       configured: ready(),
       connected: Boolean(row),
       scopes: row?.scopes || '',
+      permissions: googlePermissions(row?.scopes),
       settings: row
         ? settingsSchema.parse(row.settings)
         : settingsSchema.parse({}),
@@ -216,17 +243,33 @@ export function mountGoogle(app, { db, box, config }) {
           'Google did not grant offline access. Revoke Relay in Google account permissions and reconnect.',
         );
       tokens.expires_at = Date.now() + tokens.expires_in * 1000;
+      const previous = await db.one(
+        'SELECT settings,scopes FROM google_connections WHERE client_id=$1',
+        [record.client_id],
+      );
       await db.query(
         'INSERT INTO google_connections(client_id,tokens,scopes,settings) VALUES($1,$2,$3,$4) ON CONFLICT(client_id) DO UPDATE SET tokens=$2,scopes=$3,settings=$4,updated_at=now()',
         [
           record.client_id,
           box.encrypt(JSON.stringify(tokens)),
           tokens.scope || '',
-          JSON.stringify(settingsSchema.parse({})),
+          JSON.stringify(
+            settingsSchema.parse({
+              ...previous?.settings,
+              email_enabled: false,
+              calendar_enabled: false,
+            }),
+          ),
         ],
       );
       res.redirect(
-        config.appUrl + '/#/clients/' + record.client_id + '?google=connected',
+        config.appUrl +
+          '/#/clients/' +
+          record.client_id +
+          '?google=' +
+          (Object.values(googlePermissions(tokens.scope)).some(Boolean)
+            ? 'connected'
+            : 'permissions_missing'),
       );
     } catch {
       res.redirect(
@@ -262,7 +305,18 @@ export function mountGoogle(app, { db, box, config }) {
       throw badRequest(
         'Google connection tests are available in the deployed app.',
       );
-    const { token, row } = await googleToken(db, box, config, req.params.id);
+    const { token, row } = await googleToken(
+      db,
+      box,
+      config,
+      req.params.id,
+      true,
+    );
+    const permissions = googlePermissions(row.scopes);
+    if (!permissions.gmail && !permissions.calendar)
+      throw badRequest(
+        'Google sign-in works, but Gmail and Calendar permissions are missing. Reconnect Google and select the requested permissions on the consent screen.',
+      );
     const profile = await googleRequest(
       token,
       'https://openidconnect.googleapis.com/v1/userinfo',
@@ -287,7 +341,8 @@ export function mountGoogle(app, { db, box, config }) {
         );
     }
     res.json({
-      message: `Google access works${profile.email ? ' for ' + profile.email : ''}. No email was sent and no event was created.`,
+      permissions,
+      message: `Google offline access works${profile.email ? ' for ' + profile.email : ''}. Gmail send permission: ${permissions.gmail ? 'granted' : 'missing'}. Calendar permission: ${permissions.calendar ? 'granted' : 'missing'}. Email automation: ${row.settings.email_enabled ? 'enabled' : 'disabled'}. Scheduling: ${row.settings.calendar_enabled ? 'enabled' : 'disabled'}. No email was sent and no event was created.`,
     });
   });
   app.delete('/api/clients/:id/google', async (req, res) => {
@@ -373,6 +428,8 @@ export async function handleCustomerAction({
   conversation,
   job,
   owner,
+  dryRun = false,
+  verifiedQuote,
 }) {
   let text = (job.body || '').trim();
   const natural = text.match(
@@ -405,10 +462,9 @@ export async function handleCustomerAction({
       'Email and booking are not connected yet. Our team can help. [NEEDS_HUMAN]',
     );
   const settings = settingsSchema.parse(connection.settings);
-  const existing = await db.one(
-    'SELECT * FROM customer_actions WHERE job_id=$1',
-    [job.id],
-  );
+  const existing =
+    !dryRun &&
+    (await db.one('SELECT * FROM customer_actions WHERE job_id=$1', [job.id]));
   if (existing)
     return result(
       existing.result ||
@@ -489,14 +545,33 @@ export async function handleCustomerAction({
             throw badRequest(
               'Our email information has changed. Please request the email again.',
             );
+          if (payload.quote) {
+            const source = await db.one(
+              'SELECT content FROM knowledge_sources WHERE id=$1 AND client_id=$2 AND approved',
+              [payload.quote.sourceId, client.id],
+            );
+            if (
+              !source ||
+              sourceHash(source.content) !== payload.quote.sourceHash
+            )
+              throw badRequest(
+                'The approved price catalogue changed. Request a fresh quote before sending.',
+              );
+          }
+          const subject = payload.quote
+            ? 'Your requested quotation'
+            : current.email_subject;
+          const body = payload.quote
+            ? payload.quote.summary + '\n\n' + current.email_body
+            : current.email_body;
           const profile = await googleRequest(
             token,
             'https://openidconnect.googleapis.com/v1/userinfo',
           );
           const from = z.string().email().max(254).parse(profile.email);
           const raw = Buffer.from(
-            `From: ${from}\r\nTo: ${payload.email}\r\nDate: ${new Date().toUTCString()}\r\nSubject: =?UTF-8?B?${Buffer.from(current.email_subject).toString('base64')}?=\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${
-              Buffer.from(current.email_body)
+            `From: ${from}\r\nTo: ${payload.email}\r\nDate: ${new Date().toUTCString()}\r\nSubject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${
+              Buffer.from(body)
                 .toString('base64')
                 .match(/.{1,76}/g)
                 ?.join('\r\n') || ''
@@ -511,7 +586,7 @@ export async function handleCustomerAction({
           );
           if (!sent.id)
             throw new Error('Email result did not include a message ID');
-          message = `The requested business information was emailed to ${payload.email}.`;
+          message = `The requested ${payload.quote ? 'quotation' : 'business information'} was emailed to ${payload.email}.`;
         } else {
           if (
             !current.calendar_enabled ||
@@ -571,7 +646,23 @@ export async function handleCustomerAction({
     } catch (error) {
       message = externalStarted
         ? 'The result needs to be checked by our team before any retry. [NEEDS_HUMAN]'
-        : `${error.status === 400 ? error.message : 'This request could not be completed.'} Our team can help. [NEEDS_HUMAN]`;
+        : /^(That time is no longer free|Automated actions are paused|Our email information has changed|Our booking settings have changed|The approved price catalogue changed)/.test(
+              error.message,
+            )
+          ? error.message + ' [NEEDS_HUMAN]'
+          : 'I couldn’t complete this request. No email was sent or booking confirmed. Our team can help. [NEEDS_HUMAN]';
+      await db.query(
+        'INSERT INTO alerts(id,client_id,conversation_id,kind,message) VALUES($1,$2,$3,$4,$5)',
+        [
+          randomUUID(),
+          client.id,
+          conversation.id,
+          'integration',
+          error.status === 400
+            ? error.message
+            : 'Google action failed. Check Google permissions and reconnect before retrying.',
+        ],
+      );
       await db.query(
         'UPDATE customer_actions SET state=$1,result=$2 WHERE id=$3',
         [externalStarted ? 'uncertain' : 'failed', message, action.id],
@@ -584,7 +675,10 @@ export async function handleCustomerAction({
     const bits = text.split(/\s+/);
     let payload, prompt;
     if (kind === 'email') {
-      if (!settings.email_enabled)
+      if (
+        !settings.email_enabled ||
+        !googlePermissions(connection.scopes).gmail
+      )
         throw badRequest('Automated email is currently disabled.');
       if (bits.length !== 2)
         throw badRequest(
@@ -593,11 +687,17 @@ export async function handleCustomerAction({
       const email = z.string().email().max(254).parse(bits[1]);
       payload = {
         email,
+        ...(verifiedQuote ? { quote: verifiedQuote } : {}),
         templateHash: hash(settings.email_subject + '\n' + settings.email_body),
       };
-      prompt = `Send our business information email “${settings.email_subject}” to ${email}?`;
+      prompt = verifiedQuote
+        ? `${verifiedQuote.summary}\n\nShall I email this quotation to ${email}?`
+        : `Shall I email our business information to ${email}?`;
     } else {
-      if (!settings.calendar_enabled)
+      if (
+        !settings.calendar_enabled ||
+        !googlePermissions(connection.scopes).calendar
+      )
         throw badRequest('Automated booking is currently disabled.');
       if (bits.length !== 3 || bits[0].toLowerCase() !== '/book')
         throw badRequest(
@@ -613,7 +713,8 @@ export async function handleCustomerAction({
       prompt = `Book a ${settings.duration}-minute call on ${new Date(slot.start).toLocaleString('en-IN', { timeZone: settings.timezone })} (${settings.timezone}) and send an invitation to ${email}? Availability will be checked when you confirm.`;
     }
     const code = String(100000 + (randomBytes(4).readUInt32BE() % 900000));
-    const reply = `${prompt}\n\nPlease use your own email address. Reply yes within 15 minutes to confirm, or cancel. You can also reply /confirm ${code}.`;
+    const reply = `${prompt}\n\nReply yes to confirm, or no to cancel. This request expires in 15 minutes.`;
+    if (dryRun) return result(reply);
     const recent = await db.one(
       "SELECT count(*)::int AS n FROM customer_actions WHERE conversation_id=$1 AND created_at>now()-interval '24 hours'",
       [conversation.id],
@@ -731,6 +832,29 @@ export async function prepareCustomerAction(context, proposal, messages) {
     !addresses.some((e) => e.toLowerCase() === input.data.email.toLowerCase())
   )
     return fallback('What is your email address? Please use your own address.');
+  const recentUsers = messages.filter((m) => m.role === 'user').slice(-3);
+  const intent = emailRequested(messages);
+  if (proposal.name === 'prepare_email' && !intent)
+    return fallback(
+      'I can answer your business questions here. Would you like business information by email?',
+    );
+  if (
+    proposal.name === 'prepare_email' &&
+    /\b(?:quote|quotation|price|pricing)\b/i.test(
+      recentUsers.map((m) => m.content).join(' '),
+    ) &&
+    !context.verifiedQuote
+  )
+    return fallback(
+      'I need a verified quote for your exact specifications before I can email it. Our team can help. [NEEDS_HUMAN]',
+    );
+  if (
+    proposal.name === 'prepare_call' &&
+    !recentUsers.some((m) =>
+      /\b(?:book|schedule|meeting|call|appointment)\b/i.test(m.content),
+    )
+  )
+    return fallback('Would you like to arrange a call with our team?');
   // A model-suggested destination is never sufficient authorization to send.
   const command =
     proposal.name === 'prepare_email'
@@ -744,7 +868,7 @@ export async function prepareCustomerAction(context, proposal, messages) {
 
 export async function actionInstructions(db, clientId) {
   const row = await db.one(
-    'SELECT settings FROM google_connections WHERE client_id=$1',
+    'SELECT settings,scopes FROM google_connections WHERE client_id=$1',
     [clientId],
   );
   if (!row)
@@ -756,10 +880,10 @@ export async function actionInstructions(db, clientId) {
     '. Business timezone: ' +
     s.timezone +
     '. ' +
-    (s.email_enabled
-      ? 'When the customer asks for business information by email, collect their own email address and use prepare_email. Only the owner-approved email content can be sent. '
+    (s.email_enabled && googlePermissions(row.scopes).gmail
+      ? 'When the customer asks for business information by email, collect their own email address and use prepare_email. Only owner-approved information or an application-verified catalogue quotation can be sent. Never ask for an email to answer a price question. Never substitute a generic information email for a requested quotation. '
       : 'Automated email is disabled. ') +
-    (s.calendar_enabled
+    (s.calendar_enabled && googlePermissions(row.scopes).calendar
       ? 'When the customer requests a call or meeting, collect their own email, date and time naturally, remembering details from prior messages. Use prepare_call; never make the customer type slash commands. Booking hours ' +
         s.start_hour +
         ':00–' +

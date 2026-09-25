@@ -28,6 +28,7 @@ import * as XLSX from 'xlsx';
 import CFB from 'cfb';
 import { generateReply } from '../server/providers.js';
 import { MASTER_PROMPT, LEGACY_MASTER_PROMPT } from '../server/prompts.js';
+import { quoteForMessages } from '../server/quotes.js';
 const config = {
   demo: true,
   production: false,
@@ -361,7 +362,12 @@ test('Google actions require exact customer commands and confirmation; duplicate
   );
   const proposed = await action('/email customer@example.com');
   assert.match(proposed.text, /confirm/);
-  const code = proposed.text.match(/\/confirm (\d{6})/)[1];
+  const code = (
+    await db.one(
+      'SELECT code FROM customer_actions WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 1',
+      [conversation.id],
+    )
+  ).code;
   const before = await db.one(
     'SELECT state FROM customer_actions WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 1',
     [conversation.id],
@@ -375,7 +381,12 @@ test('Google actions require exact customer commands and confirmation; duplicate
   assert(!status.text.includes('never-exposed'));
   assert(!status.text.includes('tokens'));
   const cancelled = await action('/email another@example.com');
-  const cancelCode = cancelled.text.match(/\/confirm (\d{6})/)[1];
+  const cancelCode = (
+    await db.one(
+      'SELECT code FROM customer_actions WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 1',
+      [conversation.id],
+    )
+  ).code;
   assert.match((await action('/cancel ' + cancelCode)).text, /cancelled/);
 });
 test('OAuth callbacks reject expired state, mismatched sessions and replay', async () => {
@@ -506,20 +517,35 @@ test('live Google adapter sends only confirmed template email and does not repea
     });
   const proposal = await act('/email customer@example.com');
   assert.equal(sends, 0);
-  const code = proposal.text.match(/\/confirm (\d{6})/)[1];
+  const code = (
+    await db.one(
+      'SELECT code FROM customer_actions WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 1',
+      [conversation.id],
+    )
+  ).code;
   assert.match((await act('/confirm ' + code)).text, /was emailed/);
   assert.equal(sends, 1);
   await act('/confirm ' + code);
   assert.equal(sends, 1);
   ambiguous = true;
   const second = await act('/email customer@example.com');
-  const code2 = second.text.match(/\/confirm (\d{6})/)[1];
+  const code2 = (
+    await db.one(
+      'SELECT code FROM customer_actions WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 1',
+      [conversation.id],
+    )
+  ).code;
   assert.match((await act('/confirm ' + code2)).text, /NEEDS_HUMAN/);
   assert.equal(sends, 2);
   await act('/confirm ' + code2);
   assert.equal(sends, 2);
   const third = await act('/email customer@example.com');
-  const code3 = third.text.match(/\/confirm (\d{6})/)[1];
+  const code3 = (
+    await db.one(
+      'SELECT code FROM customer_actions WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 1',
+      [conversation.id],
+    )
+  ).code;
   await db.query('UPDATE clients SET is_active=false WHERE id=$1', [client.id]);
   assert.match((await act('/confirm ' + code3)).text, /paused/);
   assert.equal(sends, 2);
@@ -576,7 +602,12 @@ test('live booking checks availability and creates only the confirmed event', as
     start.toISOString().replace('.000Z', 'Z') +
     ' customer@example.com';
   const proposal = await act(command);
-  const code = proposal.text.match(/\/confirm (\d{6})/)[1];
+  const code = (
+    await db.one(
+      'SELECT code FROM customer_actions WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 1',
+      [conversation.id],
+    )
+  ).code;
   assert.equal(events, 0);
   assert.match((await act('/confirm ' + code)).text, /is booked/);
   assert.equal(events, 1);
@@ -584,7 +615,12 @@ test('live booking checks availability and creates only the confirmed event', as
   assert.equal(events, 1);
   busy = true;
   const second = await act(command);
-  const code2 = second.text.match(/\/confirm (\d{6})/)[1];
+  const code2 = (
+    await db.one(
+      'SELECT code FROM customer_actions WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 1',
+      [conversation.id],
+    )
+  ).code;
   assert.match((await act('/confirm ' + code2)).text, /no longer free/);
   assert.equal(events, 1);
 });
@@ -1041,7 +1077,9 @@ test('Gemini and Anthropic tool response adapters retain prior conversation and 
 test('WhatsApp worker prepares a model action and processes a natural confirmation in the next message', async () => {
   // PostgreSQL CI shares the database with the preceding test file.
   await db.query('UPDATE worker_lock SET expires_at=now()');
-  await db.query("UPDATE jobs SET state='cancelled' WHERE state IN ('pending','processing','sending')");
+  await db.query(
+    "UPDATE jobs SET state='cancelled' WHERE state IN ('pending','processing','sending')",
+  );
   const clientRow = await db.one('SELECT * FROM clients WHERE id=$1', [
     client.id,
   ]);
@@ -1145,4 +1183,214 @@ test('crawler obeys robots restrictions and blocks sources from a cancelled in-f
     ).n,
     0,
   );
+});
+
+test('quoted email contains the verified catalogue row, requires confirmation, and rejects a changed source', async (t) => {
+  await db.query('UPDATE clients SET is_active=true WHERE id=$1', [client.id]);
+  await db.query(
+    "UPDATE conversations SET status='bot',last_user_at=now() WHERE id=$1",
+    [conversation.id],
+  );
+  await db.query('DELETE FROM customer_actions WHERE conversation_id=$1', [
+    conversation.id,
+  ]);
+  await db.query(
+    'UPDATE google_connections SET settings=$1,scopes=$2,tokens=$3 WHERE client_id=$4',
+    [
+      JSON.stringify(bookingSettings),
+      'https://www.googleapis.com/auth/gmail.send',
+      box.encrypt(
+        JSON.stringify({
+          access_token: 'mock-only',
+          expires_at: Date.now() + 3600000,
+        }),
+      ),
+      client.id,
+    ],
+  );
+  const source = await saveSource(db, client.id, {
+    title: 'Test catalogue',
+    content:
+      'product_name,Qty,Side,Size,Paper GSM,price\nBrochures,4000,Double,A4,170,11500',
+    approved: true,
+  });
+  const history = [
+    {
+      role: 'user',
+      content: 'Brochure price A4 double sided 4000 copies 170 GSM',
+    },
+    {
+      role: 'user',
+      content: 'Please send quote to customer@example.com by email',
+    },
+  ];
+  const quote = (await quoteForMessages(db, client.id, history)).quote;
+  const context = {
+    db,
+    box,
+    config: { ...config, demo: false },
+    client: await db.one('SELECT * FROM clients WHERE id=$1', [client.id]),
+    conversation,
+    verifiedQuote: quote,
+  };
+  const proposal = {
+    name: 'prepare_email',
+    arguments: { email: 'customer@example.com' },
+  };
+  let sends = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (url.includes('userinfo'))
+      return Response.json({ email: 'owner@example.com' });
+    assert(url.endsWith('/messages/send'));
+    const raw = Buffer.from(
+      JSON.parse(options.body).raw,
+      'base64url',
+    ).toString();
+    const body = Buffer.from(raw.split('\r\n\r\n')[1], 'base64').toString();
+    assert(
+      body.includes('4,000 brochures, A4, double-sided, 170 GSM: ₹11,500.'),
+    );
+    sends++;
+    return Response.json({ id: 'mock-message' });
+  });
+  const countBefore = (
+    await db.one(
+      'SELECT count(*)::int AS n FROM customer_actions WHERE conversation_id=$1',
+      [conversation.id],
+    )
+  ).n;
+  const preview = await prepareCustomerAction(
+    { ...context, dryRun: true, job: { id: randomUUID() } },
+    proposal,
+    history,
+  );
+  assert.match(preview.text, /11,500/);
+  assert(!/\/confirm|Thank you for your interest/.test(preview.text));
+  assert.equal(
+    (
+      await db.one(
+        'SELECT count(*)::int AS n FROM customer_actions WHERE conversation_id=$1',
+        [conversation.id],
+      )
+    ).n,
+    countBefore,
+  );
+  const prepared = await prepareCustomerAction(
+    { ...context, job: { id: randomUUID() } },
+    proposal,
+    history,
+  );
+  assert.equal(prepared.text, preview.text);
+  assert.equal(sends, 0);
+  const code = (
+    await db.one(
+      "SELECT code FROM customer_actions WHERE conversation_id=$1 AND state='pending'",
+      [conversation.id],
+    )
+  ).code;
+  assert.match(
+    (
+      await handleCustomerAction({
+        ...context,
+        job: { id: randomUUID(), body: '/confirm ' + code },
+      })
+    ).text,
+    /quotation was emailed/,
+  );
+  assert.equal(sends, 1);
+  await prepareCustomerAction(
+    { ...context, job: { id: randomUUID() } },
+    proposal,
+    history,
+  );
+  const next = (
+    await db.one(
+      "SELECT code FROM customer_actions WHERE conversation_id=$1 AND state='pending'",
+      [conversation.id],
+    )
+  ).code;
+  await db.query('UPDATE knowledge_sources SET approved=false WHERE id=$1', [
+    source.id,
+  ]);
+  assert.match(
+    (
+      await handleCustomerAction({
+        ...context,
+        job: { id: randomUUID(), body: '/confirm ' + next },
+      })
+    ).text,
+    /catalogue changed/,
+  );
+  assert.equal(sends, 1);
+  const unsolicited = await prepareCustomerAction(
+    { ...context, job: { id: randomUUID() } },
+    proposal,
+    [{ role: 'user', content: 'customer@example.com, but tell me the price' }],
+  );
+  assert(!unsolicited.text.includes('Reply yes'));
+});
+
+test('revoked Google refresh access creates an admin alert without showing OAuth details or claiming delivery', async (t) => {
+  await db.query('DELETE FROM customer_actions WHERE conversation_id=$1', [
+    conversation.id,
+  ]);
+  await db.query('UPDATE google_connections SET tokens=$1 WHERE client_id=$2', [
+    box.encrypt(
+      JSON.stringify({ refresh_token: 'mock-refresh', expires_at: 0 }),
+    ),
+    client.id,
+  ]);
+  const context = {
+    db,
+    box,
+    config: { ...config, demo: false },
+    client: await db.one('SELECT * FROM clients WHERE id=$1', [client.id]),
+    conversation,
+  };
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    calls++;
+    assert.equal(url, 'https://oauth2.googleapis.com/token');
+    return Response.json(
+      {
+        error: 'invalid_grant',
+        error_description: 'Do not leak this upstream detail',
+      },
+      { status: 400 },
+    );
+  });
+  await handleCustomerAction({
+    ...context,
+    job: { id: randomUUID(), body: '/email customer@example.com' },
+  });
+  const code = (
+    await db.one(
+      "SELECT code FROM customer_actions WHERE conversation_id=$1 AND state='pending'",
+      [conversation.id],
+    )
+  ).code;
+  const result = await handleCustomerAction({
+    ...context,
+    job: { id: randomUUID(), body: '/confirm ' + code },
+  });
+  assert.match(result.text, /No email was sent/);
+  assert(!/Google|OAuth|refresh|upstream/.test(result.text));
+  const alert = await db.one(
+    "SELECT message FROM alerts WHERE conversation_id=$1 AND kind='integration' ORDER BY created_at DESC LIMIT 1",
+    [conversation.id],
+  );
+  assert.match(alert.message, /expired or was revoked/);
+  assert.equal(calls, 1);
+  await handleCustomerAction({
+    ...context,
+    job: { id: randomUUID(), body: '/confirm ' + code },
+  });
+  assert.equal(calls, 1);
+  await db.query(
+    "UPDATE google_connections SET scopes='openid https://www.googleapis.com/auth/userinfo.email' WHERE client_id=$1",
+    [client.id],
+  );
+  const status = await admin.get(`/api/clients/${client.id}/google`);
+  assert.deepEqual(status.body.permissions, { gmail: false, calendar: false });
+  assert.deepEqual(await actionTools(db, client.id), []);
 });

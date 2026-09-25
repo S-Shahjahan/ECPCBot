@@ -10,8 +10,8 @@ import { publicClient, saveClient } from './clients.js';
 import { providers } from './prompts.js';
 import { generateReply, ProviderError } from './providers.js';
 import { mountEnhancements } from './enhancements.js';
-import { retrieveKnowledge } from './knowledge.js';
-import { actionInstructions, actionTools } from './google.js';
+import { assistantReply } from './assistant.js';
+import { prepareCustomerAction } from './google.js';
 class DatabaseSessions extends session.Store {
   constructor(db) {
     super();
@@ -292,40 +292,32 @@ export function createApp({ db, config, generate = generateReply }) {
         return res
           .status(400)
           .json({ error: 'Start a new test conversation to continue.' });
-      const master = await db.one(
-        "SELECT value FROM settings WHERE id='master_prompt'",
-      );
-      const result = await generate({
+      const messages = [...history, { role: 'user', content: message }];
+      const result = await assistantReply({
+        db,
         client,
         box,
-        masterPrompt: master.value.text,
-        knowledge: await retrieveKnowledge(
-          db,
-          client.id,
-          [
-            ...history
-              .filter((m) => m.role === 'user')
-              .slice(-5)
-              .map((m) => m.content),
-            message,
-          ].join(' '),
-        ),
-        actionGuide: await actionInstructions(db, client.id),
-        actionTools: await actionTools(db, client.id),
-        messages: [...history, { role: 'user', content: message }],
-        demo: config.demo,
+        config,
+        messages,
+        generate,
       });
-      if (result.proposedAction)
-        result.text =
-          'Test preview: ' +
-          (result.proposedAction.name === 'prepare_email'
-            ? 'prepare an email to '
-            : 'prepare a call for ') +
-          (result.proposedAction.arguments?.email || 'the customer') +
-          (result.proposedAction.arguments?.start
-            ? ' at ' + result.proposedAction.arguments.start
-            : '') +
-          '. In WhatsApp, the customer will be asked to confirm before any action. This test does not send mail or create events.';
+      if (result.proposedAction) {
+        const preview = await prepareCustomerAction(
+          {
+            db,
+            box,
+            config,
+            client,
+            dryRun: true,
+            verifiedQuote: result.verifiedQuote,
+            job: { body: message },
+          },
+          result.proposedAction,
+          messages,
+        );
+        result.text = preview.text;
+        result.simulation = true;
+      }
       await db.query(
         'INSERT INTO llm_usage(id,client_id,source,tokens,cost) VALUES($1,$2,$3,$4,$5)',
         [randomUUID(), client.id, 'sandbox', result.tokens, result.cost],

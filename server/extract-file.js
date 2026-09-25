@@ -47,7 +47,7 @@ process.once('message', async ({ base64, name }) => {
     } else if (['.xlsx', '.xls', '.pptx', '.ppt'].includes(ext)) {
       text = await officeText(buffer, ext);
       note =
-        'Extracted cell values or slide text. Review reading order, formulas with cached values, charts and image-only content; embedded images are not transcribed.';
+        'Imported all worksheets or slides. Extracted cell values or slide text. Review reading order, formulas with cached values, charts and image-only content; embedded images are not transcribed.';
     } else if (ext === '.docx')
       text = (await mammoth.extractRawText({ buffer })).value;
     else if (ext === '.doc')

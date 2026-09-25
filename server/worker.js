@@ -2,13 +2,8 @@ import { randomUUID } from 'node:crypto';
 import nodemailer from 'nodemailer';
 import { generateReply, sendWhatsApp, ProviderError } from './providers.js';
 import { applyReceipt } from './receipts.js';
-import { retrieveKnowledge } from './knowledge.js';
-import {
-  handleCustomerAction,
-  actionInstructions,
-  actionTools,
-  prepareCustomerAction,
-} from './google.js';
+import { assistantReply } from './assistant.js';
+import { handleCustomerAction, prepareCustomerAction } from './google.js';
 import { plainReply } from './conversation.js';
 export function createWorker({
   db,
@@ -73,17 +68,12 @@ export function createWorker({
         [conversation.id, job.meta_id],
       );
       const messages = [
-        ...history
-          .reverse()
-          .map((m) => ({
-            role: m.direction === 'inbound' ? 'user' : 'assistant',
-            content: m.body,
-          })),
+        ...history.reverse().map((m) => ({
+          role: m.direction === 'inbound' ? 'user' : 'assistant',
+          content: m.body,
+        })),
         { role: 'user', content: job.body },
       ];
-      const master = await db.one(
-        "SELECT value FROM settings WHERE id='master_prompt'",
-      );
       try {
         result =
           (await handleCustomerAction({
@@ -95,27 +85,26 @@ export function createWorker({
             job,
             owner,
           })) ||
-          (await generate({
+          (await assistantReply({
+            db,
             client,
             box,
-            masterPrompt: master.value.text,
-            actionGuide: await actionInstructions(db, client.id),
-            actionTools: await actionTools(db, client.id),
-            knowledge: await retrieveKnowledge(
-              db,
-              client.id,
-              messages
-                .filter((m) => m.role === 'user')
-                .slice(-6)
-                .map((m) => m.content)
-                .join(' '),
-            ),
+            config,
             messages,
-            demo: config.demo,
+            generate,
           }));
         if (result.proposedAction) {
           const prepared = await prepareCustomerAction(
-            { db, box, config, client, conversation, job, owner },
+            {
+              db,
+              box,
+              config,
+              client,
+              conversation,
+              job,
+              owner,
+              verifiedQuote: result.verifiedQuote,
+            },
             result.proposedAction,
             messages,
           );

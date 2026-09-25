@@ -130,8 +130,8 @@ export function PersonalityDraft({
       </button>
       <small>
         Uses saved direct facts and approved imports. Review the proposed
-        personality before replacing your current instructions. AI usage may be
-        charged.
+        personality before replacing your current instructions. Prices and
+        promises stay in the approved facts rather than generated examples.
       </small>
       <Result message={error} error />
       {draft && (
@@ -224,7 +224,8 @@ export function KnowledgeLibrary({ id, api }: { id: string | null; api: Api }) {
           <FileText size={25} />
           <strong>Import a file</strong>
           <span>
-            PDF · Word · Excel · PowerPoint · Markdown · Text · Images
+            PDF · Word · Excel (all worksheets) · PowerPoint · Markdown · Text ·
+            Images
           </span>
           <small>Up to 10 MB. English OCR for images and scanned PDFs.</small>
           <input
@@ -513,11 +514,13 @@ export function GoogleIntegration({
       setMessage(
         status === 'connected'
           ? 'Google connected. Review and enable the actions below.'
-          : status === 'cancelled'
-            ? 'Google connection was cancelled.'
-            : 'Google connection failed. Check consent, redirect URI and OAuth settings, then reconnect.',
+          : status === 'permissions_missing'
+            ? 'Google sign-in succeeded, but email and calendar permissions were not granted. Reconnect and select the requested permissions on Google’s consent screen.'
+            : status === 'cancelled'
+              ? 'Google connection was cancelled.'
+              : 'Google connection failed. Check consent, redirect URI and OAuth settings, then reconnect.',
       );
-      setError(status === 'failed');
+      setError(status === 'failed' || status === 'permissions_missing');
     }
   }, [id]);
   async function run(fn: () => Promise<void>) {
@@ -562,13 +565,34 @@ export function GoogleIntegration({
       <div className="integration-status">
         <strong>
           {data.connected
-            ? 'Google account connected — review automation below'
+            ? data.permissions?.gmail || data.permissions?.calendar
+              ? 'Google account connected — review automation below'
+              : 'Google permissions required'
             : 'Connect your business account'}
         </strong>
         <span className={'badge ' + (data.connected ? 'green' : 'gray')}>
-          {data.connected ? 'Connected' : 'Not connected'}
+          {data.connected
+            ? data.permissions?.gmail || data.permissions?.calendar
+              ? 'Connected'
+              : 'Sign-in only'
+            : 'Not connected'}
         </span>
       </div>
+      {data.connected && (
+        <div className="notice subtle" role="status">
+          Gmail send:{' '}
+          {data.permissions?.gmail
+            ? 'permission granted'
+            : 'permission missing'}{' '}
+          · Calendar:{' '}
+          {data.permissions?.calendar
+            ? 'permission granted'
+            : 'permission missing'}
+          .
+          {(!data.permissions?.gmail || !data.permissions?.calendar) &&
+            ' To use a missing capability, reconnect Google and grant its permission on the consent screen.'}
+        </div>
+      )}
       {!data.configured && (
         <div className="notice">
           <div>
@@ -692,6 +716,7 @@ export function GoogleIntegration({
               className="switch"
               type="checkbox"
               checked={settings.email_enabled}
+              disabled={!data.permissions?.gmail}
               onChange={(e) => set('email_enabled', e.target.checked)}
             />
           </label>
@@ -727,6 +752,7 @@ export function GoogleIntegration({
               className="switch"
               type="checkbox"
               checked={settings.calendar_enabled}
+              disabled={!data.permissions?.calendar}
               onChange={(e) => set('calendar_enabled', e.target.checked)}
             />
           </label>

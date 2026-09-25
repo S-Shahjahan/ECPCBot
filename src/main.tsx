@@ -1579,7 +1579,9 @@ function ClientEditor({
               <span className="mini-label">{demo ? 'DEMO' : 'SANDBOX'}</span>
             </div>
             <p className="test-intro">
-              Try the saved prompt here. No message is sent to WhatsApp.
+              Try the saved configuration with its reply rules and approved
+              facts. This preview has its own conversation history. It does not
+              send WhatsApp messages or email, or create calendar events.
             </p>
             <div className="chat-preview">
               <div className="preview-business">

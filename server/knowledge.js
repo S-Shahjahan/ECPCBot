@@ -77,6 +77,19 @@ export async function saveSource(db, clientId, input) {
   return { id };
 }
 export async function retrieveKnowledge(db, clientId, question) {
+  // Small libraries are supplied in full, including every worksheet. Larger
+  // libraries use indexed retrieval over every imported chunk, not just sheet one.
+  const size = await db.one(
+    'SELECT coalesce(sum(length(content)),0)::int AS total FROM knowledge_sources WHERE client_id=$1 AND approved',
+    [clientId],
+  );
+  if (size.total <= 50000) {
+    const sources = await db.all(
+      'SELECT title,content FROM knowledge_sources WHERE client_id=$1 AND approved ORDER BY created_at,id',
+      [clientId],
+    );
+    return sources.map((s) => `${s.title}\n${s.content}`).join('\n\n');
+  }
   const terms = question.match(/[\p{L}\p{N}]{2,}/gu)?.slice(-80) || [];
   const query = terms.map((t) => t.replace(/[^\p{L}\p{N}]/gu, '')).join(' | ');
   const rows = await db.all(
