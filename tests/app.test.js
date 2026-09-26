@@ -339,6 +339,26 @@ test('signed duplicate webhook is durable and produces one routed response', asy
     ).state,
     'done',
   );
+  const conversation = await db.one(
+    'SELECT id FROM conversations WHERE client_id=$1 AND phone_hash=$2',
+    [first.id, box.phoneHash('919123456789')],
+  );
+  const listedConversation = (
+    await admin.get('/api/conversations').query({ client: first.id })
+  ).body.find((item) => item.id === conversation.id);
+  assert.equal(Number(listedConversation.token_count), 50);
+  assert.equal(
+    Number(
+      (await admin.get('/api/conversations/' + conversation.id)).body
+        .token_count,
+    ),
+    50,
+  );
+  const listedClient = (await admin.get('/api/clients')).body.find(
+    (item) => item.id === first.id,
+  );
+  assert.equal(Number(listedClient.monthly_tokens), 50);
+  assert.equal(Number(listedClient.total_tokens), 50);
   await w.stop();
 });
 test('one endpoint isolates clients and honours per-app signing secrets', async () => {
@@ -861,6 +881,7 @@ test('AI test endpoint shows safe actionable provider errors and keeps raw respo
     [401, 'AI_KEY_REJECTED', 'API key'],
     [403, 'AI_ACCESS_DENIED', 'permissions'],
     [404, 'AI_MODEL_NOT_FOUND', 'model ID'],
+    [413, 'AI_REQUEST_TOO_LARGE', 'oversized request'],
     [429, 'AI_LIMIT_REACHED', 'quota'],
     [503, 'AI_PROVIDER_UNAVAILABLE', 'temporarily unavailable'],
   ]) {

@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS llm_usage (
  created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS usage_client_time ON llm_usage(client_id,created_at);
+CREATE INDEX IF NOT EXISTS usage_conversation_time ON llm_usage(conversation_id,created_at) WHERE conversation_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS jobs (
  id text PRIMARY KEY, meta_id text NOT NULL UNIQUE, client_id text NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
  conversation_id text NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, body text,

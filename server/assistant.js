@@ -1,4 +1,4 @@
-import { retrieveKnowledge } from './knowledge.js';
+import { retrieveKnowledge, relevantText } from './knowledge.js';
 import { actionInstructions, actionTools } from './google.js';
 import { quoteForMessages, emailRequested } from './quotes.js';
 import { fixedReply } from './reply-policy.js';
@@ -53,19 +53,17 @@ export async function assistantReply({
   const master = await db.one(
     "SELECT value FROM settings WHERE id='master_prompt'",
   );
+  const question = messages
+    .filter((m) => m.role === 'user')
+    .slice(-6)
+    .map((m) => m.content)
+    .join(' ');
   const result = await generate({
     client,
     box,
     masterPrompt: master.value.text,
-    knowledge: await retrieveKnowledge(
-      db,
-      client.id,
-      messages
-        .filter((m) => m.role === 'user')
-        .slice(-6)
-        .map((m) => m.content)
-        .join(' '),
-    ),
+    knowledge: await retrieveKnowledge(db, client.id, question),
+    businessFacts: relevantText(client.config.business_facts, question),
     actionGuide: await actionInstructions(db, client.id),
     actionTools: await actionTools(db, client.id),
     messages,

@@ -58,6 +58,96 @@ export function chunks(text) {
     result.push(text.slice(i, i + 1900));
   return result;
 }
+
+export const KNOWLEDGE_CHAR_BUDGET = 3500;
+const STOP_WORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'are',
+  'can',
+  'do',
+  'for',
+  'how',
+  'i',
+  'in',
+  'is',
+  'it',
+  'me',
+  'my',
+  'of',
+  'on',
+  'or',
+  'please',
+  'the',
+  'this',
+  'to',
+  'we',
+  'what',
+  'when',
+  'where',
+  'which',
+  'with',
+  'you',
+  'your',
+]);
+const SYNONYMS = {
+  offer: ['service', 'services', 'product', 'products'],
+  available: ['availability', 'service', 'services', 'product', 'products'],
+  cost: ['price', 'pricing', 'rate'],
+  rate: ['price', 'pricing', 'cost'],
+  timing: ['hours', 'open', 'opening'],
+  timings: ['hours', 'open', 'opening'],
+  address: ['location', 'located'],
+  location: ['address', 'located'],
+  mail: ['email'],
+};
+
+export function searchTerms(question, limit = 24) {
+  const original = question.match(/[\p{L}\p{N}]{2,}/gu) || [];
+  const terms = [];
+  for (const raw of original) {
+    const term = raw.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+    if (!term || STOP_WORDS.has(term)) continue;
+    for (const value of [term, ...(SYNONYMS[term] || [])])
+      if (!terms.includes(value)) terms.push(value);
+    if (terms.length >= limit) break;
+  }
+  return terms.slice(0, limit);
+}
+
+export function relevantText(text, question, maxChars = 1500) {
+  const value = String(text || '').trim();
+  if (value.length <= maxChars) return value;
+  const terms = searchTerms(question);
+  const passages = value
+    .split(/\n{2,}|(?<=[.!?])\s+(?=[A-Z0-9])/)
+    .map((content, index) => ({ content: content.trim(), index }))
+    .filter((part) => part.content);
+  for (const part of passages) {
+    const normalized = part.content.toLowerCase();
+    part.score = terms.reduce(
+      (score, term) => score + (normalized.includes(term) ? 1 : 0),
+      0,
+    );
+  }
+  const ranked = passages
+    .filter((part) => part.score)
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+  const selected = [];
+  let used = 0;
+  for (const part of ranked.length ? ranked : passages) {
+    const remaining = maxChars - used - (selected.length ? 2 : 0);
+    if (remaining <= 0) break;
+    selected.push({ ...part, content: part.content.slice(0, remaining) });
+    used +=
+      Math.min(part.content.length, remaining) + (selected.length > 1 ? 2 : 0);
+  }
+  return selected
+    .sort((a, b) => a.index - b.index)
+    .map((part) => part.content)
+    .join('\n\n');
+}
 export async function saveSource(db, clientId, input) {
   const id = randomUUID();
   const content = redact(input.content);
@@ -76,25 +166,38 @@ export async function saveSource(db, clientId, input) {
   );
   return { id };
 }
-export async function retrieveKnowledge(db, clientId, question) {
-  // Small libraries are supplied in full, including every worksheet. Larger
-  // libraries use indexed retrieval over every imported chunk, not just sheet one.
-  const size = await db.one(
-    'SELECT coalesce(sum(length(content)),0)::int AS total FROM knowledge_sources WHERE client_id=$1 AND approved',
-    [clientId],
-  );
-  if (size.total <= 50000) {
-    const sources = await db.all(
-      'SELECT title,content FROM knowledge_sources WHERE client_id=$1 AND approved ORDER BY created_at,id',
-      [clientId],
-    );
-    return sources.map((s) => `${s.title}\n${s.content}`).join('\n\n');
-  }
-  const terms = question.match(/[\p{L}\p{N}]{2,}/gu)?.slice(-80) || [];
-  const query = terms.map((t) => t.replace(/[^\p{L}\p{N}]/gu, '')).join(' | ');
+export async function retrieveKnowledge(
+  db,
+  clientId,
+  question,
+  maxChars = KNOWLEDGE_CHAR_BUDGET,
+) {
+  const terms = searchTerms(question);
+  if (!terms.length) return '';
+  const query = terms.join(' | ');
   const rows = await db.all(
-    `SELECT s.title,k.content FROM knowledge_chunks k JOIN knowledge_sources s ON s.id=k.source_id WHERE s.client_id=$1 AND s.approved ORDER BY ts_rank(k.search,to_tsquery('simple',$2)) DESC,s.created_at DESC,k.ordinal LIMIT 10`,
-    [clientId, query || 'relaynomatch'],
+    `WITH q AS (SELECT to_tsquery('simple',$2) AS terms)
+     SELECT s.title,k.content,
+       ts_rank_cd(k.search,q.terms) AS rank
+     FROM knowledge_chunks k
+     JOIN knowledge_sources s ON s.id=k.source_id
+     CROSS JOIN q
+     WHERE s.client_id=$1 AND s.approved
+       AND k.search @@ q.terms
+     ORDER BY rank DESC,s.created_at DESC,k.ordinal
+     LIMIT 8`,
+    [clientId, query],
   );
-  return rows.map((r) => `${r.title}\n${r.content}`).join('\n\n');
+  const selected = [];
+  let used = 0;
+  for (const row of rows) {
+    const prefix = `SOURCE: ${String(row.title).slice(0, 200)}\n`;
+    const remaining = maxChars - used - (selected.length ? 2 : 0);
+    if (remaining <= prefix.length) break;
+    const passage = prefix + row.content.slice(0, remaining - prefix.length);
+    selected.push(passage);
+    used += passage.length + (selected.length > 1 ? 2 : 0);
+    if (used >= maxChars) break;
+  }
+  return selected.join('\n\n');
 }

@@ -287,8 +287,9 @@ test('quotation email request can collect the address in the next customer turn'
   assert.equal(proposal.verifiedQuote.price, 11500);
 });
 
-test('reviewer receives the entire approved context and the candidate for a large library', async () => {
+test('provider and reviewer keep relevant edges while bounding large evidence', async () => {
   let calls = 0;
+  const requestSizes = [];
   const knowledge =
     'Business details '.repeat(4000) +
     ' Final worksheet: rare service is available';
@@ -301,9 +302,18 @@ test('reviewer receives the entire approved context and the candidate for a larg
     verifyReply: true,
     fetchFn: async (_url, options) => {
       const request = JSON.parse(options.body);
+      requestSizes.push(options.body.length);
+      if (calls === 0) {
+        const reference = JSON.parse(request.messages[1].content);
+        assert(reference.retrieved_sources.length <= 3500);
+        assert(
+          reference.retrieved_sources.endsWith('rare service is available'),
+        );
+      }
       if (++calls === 2) {
         const payload = JSON.parse(request.messages.at(-1).content);
         assert(payload.approved_facts[1].endsWith('rare service is available'));
+        assert(payload.approved_facts[1].length <= 3500);
         assert.equal(payload.candidate, 'The rare service is available.');
       }
       return Response.json({
@@ -321,4 +331,5 @@ test('reviewer receives the entire approved context and the candidate for a larg
     },
   });
   assert.equal(result.text, 'The rare service is available.');
+  assert(requestSizes.every((size) => size < 18000));
 });

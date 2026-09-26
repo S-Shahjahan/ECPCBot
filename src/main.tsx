@@ -624,6 +624,10 @@ function Clients({
   const [pending, setPending] = useState('');
   if (error) return <Empty title="Could not load clients">{error}</Empty>;
   if (!clients || !stats) return <Loading />;
+  const highestMonthlyTokens = Math.max(
+    1,
+    ...clients.map((c: Obj) => Number(c.monthly_tokens) || 0),
+  );
   const filtered = clients.filter(
     (c: Obj) =>
       (c.client_name + ' ' + c.phone_number_id)
@@ -737,6 +741,7 @@ function Clients({
                   <th>ASSISTANT</th>
                   <th>STATUS</th>
                   <th>CONVERSATIONS</th>
+                  <th>TOKEN USE</th>
                   <th aria-label="Actions" />
                 </tr>
               </thead>
@@ -803,6 +808,32 @@ function Clients({
                           {c.handoff_count} with a person
                         </small>
                       )}
+                    </td>
+                    <td>
+                      <div
+                        className="token-meter"
+                        title={`${Number(c.total_tokens || 0).toLocaleString()} tokens used in total`}
+                      >
+                        <span>
+                          {Number(c.monthly_tokens || 0).toLocaleString()} this
+                          month
+                        </span>
+                        <div aria-hidden="true">
+                          <i
+                            style={{
+                              width: `${Math.max(
+                                Number(c.monthly_tokens) ? 5 : 0,
+                                (Number(c.monthly_tokens || 0) /
+                                  highestMonthlyTokens) *
+                                  100,
+                              )}%`,
+                            }}
+                          />
+                        </div>
+                        <small>
+                          {Number(c.total_tokens || 0).toLocaleString()} total
+                        </small>
+                      </div>
                     </td>
                     <td>
                       <a
@@ -1882,7 +1913,10 @@ function Conversations({
                   </time>
                 </div>
                 <span className="conversation-client">
-                  {c.client_name}
+                  <span>{c.client_name}</span>
+                  <small>
+                    {Number(c.token_count || 0).toLocaleString()} tokens
+                  </small>
                   {c.status === 'human' && <Badge tone="orange">Human</Badge>}
                 </span>
                 <p>{c.last_message || 'Message content removed'}</p>
@@ -1964,6 +1998,10 @@ function Conversation({
         <Badge tone={c.status === 'human' ? 'orange' : 'green'}>
           {c.status === 'human' ? 'Human handling' : 'Assistant active'}
         </Badge>
+        <span className="conversation-token-total">
+          <Zap size={13} />
+          {Number(c.token_count || 0).toLocaleString()} tokens
+        </span>
         <button
           className="icon-button danger-link"
           aria-label="Delete this person’s data"
@@ -2017,6 +2055,9 @@ function Conversation({
               {m.body || <em>Message removed by retention policy</em>}
               <div className="message-meta">
                 <time>{date(m.created_at)}</time>
+                {Number(m.tokens) > 0 && (
+                  <span>{Number(m.tokens).toLocaleString()} tokens</span>
+                )}
                 {m.direction === 'outbound' && (
                   <span className={m.status === 'read' ? 'read-receipt' : ''}>
                     {m.status === 'read' || m.status === 'delivered' ? (

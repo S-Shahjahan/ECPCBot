@@ -205,7 +205,21 @@ export function createApp({ db, config, generate = generateReply }) {
   });
   app.get('/api/clients', async (_req, res) => {
     const rows = await db.all(
-      `SELECT c.*,(SELECT count(*)::int FROM conversations cv WHERE cv.client_id=c.id) AS conversation_count,(SELECT count(*)::int FROM conversations cv WHERE cv.client_id=c.id AND cv.status='human') AS handoff_count,(SELECT coalesce(sum(m.cost),0) FROM llm_usage m WHERE m.client_id=c.id AND m.created_at>=date_trunc('month',now())) AS monthly_cost FROM clients c ORDER BY created_at DESC`,
+      `SELECT c.*,
+        (SELECT count(*)::int FROM conversations cv WHERE cv.client_id=c.id) AS conversation_count,
+        (SELECT count(*)::int FROM conversations cv WHERE cv.client_id=c.id AND cv.status='human') AS handoff_count,
+        coalesce(usage.monthly_cost,0) AS monthly_cost,
+        coalesce(usage.monthly_tokens,0)::bigint AS monthly_tokens,
+        coalesce(usage.total_tokens,0)::bigint AS total_tokens
+       FROM clients c
+       LEFT JOIN LATERAL (
+         SELECT
+           sum(m.cost) FILTER (WHERE m.created_at>=date_trunc('month',now())) AS monthly_cost,
+           sum(m.tokens) FILTER (WHERE m.created_at>=date_trunc('month',now())) AS monthly_tokens,
+           sum(m.tokens) AS total_tokens
+         FROM llm_usage m WHERE m.client_id=c.id
+       ) usage ON true
+       ORDER BY c.created_at DESC`,
     );
     res.json(rows.map(publicClient));
   });
@@ -334,7 +348,12 @@ export function createApp({ db, config, generate = generateReply }) {
     const page = Math.max(0, Math.min(10000, Number(req.query.page) || 0));
     res.json(
       await db.all(
-        `SELECT cv.id,cv.client_id,cv.phone_label,cv.status,cv.last_user_at,cv.created_at,c.client_name,(SELECT body FROM message_logs WHERE conversation_id=cv.id ORDER BY created_at DESC LIMIT 1) AS last_message FROM conversations cv JOIN clients c ON c.id=cv.client_id WHERE ($1='' OR cv.client_id=$1) AND ($2='' OR cv.status=$2) ORDER BY cv.last_user_at DESC LIMIT 31 OFFSET $3`,
+        `SELECT cv.id,cv.client_id,cv.phone_label,cv.status,cv.last_user_at,cv.created_at,c.client_name,
+          (SELECT body FROM message_logs WHERE conversation_id=cv.id ORDER BY created_at DESC LIMIT 1) AS last_message,
+          coalesce((SELECT sum(u.tokens) FROM llm_usage u WHERE u.conversation_id=cv.id),0)::bigint AS token_count
+         FROM conversations cv JOIN clients c ON c.id=cv.client_id
+         WHERE ($1='' OR cv.client_id=$1) AND ($2='' OR cv.status=$2)
+         ORDER BY cv.last_user_at DESC LIMIT 31 OFFSET $3`,
         [
           String(req.query.client || ''),
           req.query.status === 'human' ? 'human' : '',
@@ -345,7 +364,10 @@ export function createApp({ db, config, generate = generateReply }) {
   });
   app.get('/api/conversations/:id', async (req, res) => {
     const conversation = await db.one(
-      'SELECT cv.*,c.client_name FROM conversations cv JOIN clients c ON c.id=cv.client_id WHERE cv.id=$1',
+      `SELECT cv.*,c.client_name,
+        coalesce((SELECT sum(u.tokens) FROM llm_usage u WHERE u.conversation_id=cv.id),0)::bigint AS token_count,
+        coalesce((SELECT sum(u.cost) FROM llm_usage u WHERE u.conversation_id=cv.id),0) AS token_cost
+       FROM conversations cv JOIN clients c ON c.id=cv.client_id WHERE cv.id=$1`,
       [req.params.id],
     );
     if (!conversation) return res.sendStatus(404);

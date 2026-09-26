@@ -195,6 +195,34 @@ test('source approval and retrieval remain isolated per client', async () => {
   );
   assert.equal(await retrieveKnowledge(db, client.id, 'cakes'), '');
 });
+test('retrieval searches every approved library through ranked chunks and enforces its evidence budget', async () => {
+  const filler = Array.from(
+    { length: 90 },
+    (_, i) =>
+      `Section ${i}: routine background about printing materials and finishing choices.`,
+  ).join('\n\n');
+  const source = await saveSource(db, client.id, {
+    title: 'Large operating guide',
+    content:
+      filler +
+      '\n\nCollection policy: completed orders require the printed order reference.',
+    approved: true,
+  });
+  const result = await retrieveKnowledge(
+    db,
+    client.id,
+    'What is the collection policy and order reference?',
+  );
+  assert.match(result, /Collection policy/);
+  assert(result.length <= 3500);
+  assert.equal(
+    await retrieveKnowledge(db, client.id, 'astronomy supernova'),
+    '',
+  );
+  await db.query('UPDATE knowledge_sources SET approved=false WHERE id=$1', [
+    source.id,
+  ]);
+});
 test('text and Word uploads produce reviewable text without retaining files', async () => {
   const imported = await admin
     .post(`/api/clients/${client.id}/import-file`)
@@ -883,7 +911,7 @@ test('conversation context keeps initial preferences and recent follow-ups; repl
   const context = conversationContext(turns);
   assert.match(context[0].content, /matte/);
   assert.match(context.at(-1).content, /that finish/);
-  assert(context.reduce((n, m) => n + m.content.length, 0) <= 48000);
+  assert(context.reduce((n, m) => n + m.content.length, 0) <= 4500);
   const plain = plainReply(
     '## Options\n**Premium**\n| Product | Price |\n| --- | --- |\n| Cards | ₹500 |\n- Ask us\n[NEEDS_HUMAN]',
   );

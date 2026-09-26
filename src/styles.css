@@ -720,6 +720,33 @@ tbody tr:hover {
   font-size: 9px;
   color: #bd9b5f;
 }
+.token-meter {
+  min-width: 116px;
+  color: #607664;
+  font-size: 10px;
+}
+.token-meter > span,
+.token-meter small {
+  display: block;
+}
+.token-meter > div {
+  width: 100%;
+  height: 4px;
+  margin: 6px 0 5px;
+  overflow: hidden;
+  border-radius: 20px;
+  background: #e8eee8;
+}
+.token-meter i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #69a783, #8d7bc3);
+}
+.token-meter small {
+  color: #9ba79d;
+  font-size: 9px;
+}
 .table-footer {
   padding: 17px 23px;
   border-top: 1px solid #edf1ed;
@@ -1529,6 +1556,11 @@ dialog > p {
   font-size: 11px;
   color: #819971;
 }
+.conversation-client small {
+  margin-left: auto;
+  color: #98a78d;
+  font-size: 9px;
+}
 .conversation-item p {
   font-size: 12px;
   color: #a0ad94;
@@ -1579,6 +1611,17 @@ dialog > p {
 }
 .conversation-header > .badge {
   margin-left: auto;
+}
+.conversation-token-total {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border-radius: 20px;
+  background: #f2eff8;
+  color: #7d6ba2;
+  font-size: 10px;
+  white-space: nowrap;
 }
 .conversation-toolbar {
   display: flex;
